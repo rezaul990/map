@@ -1,183 +1,282 @@
 const App = (() => {
-  let visited = new Set();
   let bdData = null;
-  let customName = "";
-  let customImage = null;
-  const STORAGE_KEY = "travel-map-state";
+  let currentMetric = "collectedQty";
+  let districtFilter = "all";
+  let plazaData = null;
+  let districtStats = {};
+  const STORAGE_KEY = "plaza-map-state";
+
+  const METRIC_COLUMNS = {
+    collectedQty: "Collectable Vs. Collected Acc Qty (%)",
+    collectableAmt: "Collectable Vs. Collected Amt (%)",
+    overdueChange: "Overdue Increase/(Decrease)"
+  };
 
   async function init() {
     await loadBDData();
-    loadData();
-    initThemePicker();
-    initMap();
+    populateDistrictFilter();
+    initMetricTabs();
     initEventListeners();
-    updateSidebar();
-    updateProgress();
   }
 
   async function loadBDData() {
     const res = await fetch("data/bangladesh.geojson");
-    if (!res.ok) throw new Error("Failed to load Bangladesh map data");
     bdData = await res.json();
   }
 
-  function loadData() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-      const knownIds = new Set(bdData.features.map(getLocationId));
-      if (Array.isArray(saved.bd)) {
-        visited = new Set(saved.bd.filter(id => knownIds.has(id)));
-      }
-      if (saved.theme) setTheme(saved.theme);
-      if (typeof saved.name === "string") {
-        customName = saved.name;
-        document.getElementById("customName").value = saved.name;
-      }
-      if (typeof saved.image === "string" && saved.image) {
-        customImage = saved.image;
-        showImagePreview(saved.image);
-      }
-    } catch (e) {
-      console.warn("Failed to load saved data", e);
-    }
+  function populateDistrictFilter() {
+    const select = document.getElementById("districtFilter");
+    const names = new Set();
+    bdData.features.forEach(f => {
+      const shape = f.properties.shapeName;
+      const name = BD_DISTRICTS[shape] ? BD_DISTRICTS[shape].en : shape;
+      names.add({ shape, name });
+    });
+    [...names].sort((a, b) => a.name.localeCompare(b.name)).forEach(({ shape, name }) => {
+      const opt = document.createElement("option");
+      opt.value = shape;
+      opt.textContent = name;
+      select.appendChild(opt);
+    });
   }
 
-  function saveData() {
-    const data = {
-      bd: Array.from(visited),
-      theme: document.documentElement.getAttribute("data-theme") || "default",
-      name: customName,
-      image: customImage
-    };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  }
-
-  function initThemePicker() {
-    const themes = ["default", "emerald", "sunset", "violet", "rose", "gold", "mint", "coral", "aurora"];
-    const container = document.getElementById("themePicker");
-    const activeTheme = document.documentElement.getAttribute("data-theme") || "default";
-
-    themes.forEach(theme => {
-      const swatch = document.createElement("div");
-      swatch.className = "theme-swatch" + (theme === activeTheme ? " active" : "");
-      swatch.dataset.theme = theme;
-      swatch.title = theme.charAt(0).toUpperCase() + theme.slice(1);
-      swatch.setAttribute("role", "button");
-      swatch.setAttribute("aria-label", `${swatch.title} theme`);
-      swatch.tabIndex = 0;
-
-      const selectTheme = () => {
-        setTheme(theme);
-        saveData();
-      };
-      swatch.addEventListener("click", selectTheme);
-      swatch.addEventListener("keydown", event => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          selectTheme();
-        }
+  function initMetricTabs() {
+    document.querySelectorAll(".metric-tab").forEach(tab => {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll(".metric-tab").forEach(t => t.classList.remove("active"));
+        tab.classList.add("active");
+        currentMetric = tab.dataset.metric;
+        renderMap();
+        updateSidebar();
       });
-      container.appendChild(swatch);
     });
   }
 
-  function setTheme(theme) {
-    if (theme === "default") {
-      document.documentElement.removeAttribute("data-theme");
-    } else {
-      document.documentElement.setAttribute("data-theme", theme);
+  function initEventListeners() {
+    document.getElementById("dataFile").addEventListener("change", handleFileUpload);
+    document.getElementById("districtFilter").addEventListener("change", (e) => {
+      districtFilter = e.target.value;
+      renderMap();
+      updateSidebar();
+    });
+    document.getElementById("searchInput").addEventListener("input", (e) => {
+      updateSidebar(e.target.value);
+    });
+  }
+
+  async function handleFileUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const status = document.getElementById("uploadStatus");
+    status.textContent = "ফাইল পড়া হচ্ছে...";
+    status.classList.add("loading");
+
+    try {
+      const data = await file.arrayBuffer();
+      const wb = XLSX.read(data, { type: "array" });
+      const sheetName = wb.SheetNames[0];
+      const ws = wb.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+
+      plazaData = parsePlazaRows(rows);
+      districtStats = computeDistrictStats();
+      status.textContent = `${Object.keys(plazaData).length} প্লাজা লোড হয়েছে`;
+      status.classList.remove("loading");
+      status.classList.add("success");
+
+      document.getElementById("mapEmpty").style.display = "none";
+      renderMap();
+      updateSidebar();
+      showToast("ডেটা লোড হয়েছে!");
+    } catch (err) {
+      console.error(err);
+      status.textContent = "ফাইল পড়তে সমস্যা হয়েছে";
+      status.classList.remove("loading");
+      status.classList.add("error");
+      showToast("ফাইল পড়তে ব্যর্থ হয়েছে");
     }
-    document.querySelectorAll(".theme-swatch").forEach(swatch => {
-      swatch.classList.toggle("active", swatch.dataset.theme === (theme || "default"));
+  }
+
+  function parsePlazaRows(rows) {
+    let headerRowIdx = -1;
+    for (let r = 0; r < Math.min(rows.length, 10); r++) {
+      const row = rows[r];
+      if (row && String(row[7] || "").trim() === "Plaza") {
+        headerRowIdx = r;
+        break;
+      }
+    }
+    if (headerRowIdx === -1) {
+      throw new Error("Header row not found");
+    }
+
+    const out = {};
+    for (let r = headerRowIdx + 1; r < rows.length; r++) {
+      const row = rows[r];
+      if (!row) continue;
+      const plaza = String(row[7] || "").trim();
+      if (!plaza) continue;
+
+      out[plaza] = {
+        collectableQty: toNum(row[9]),
+        collectedQty: toNum(row[10]),
+        qtyPct: toNum(row[11]),
+        collectableAmt: toNum(row[13]),
+        collectedAmt: toNum(row[16]),
+        advance: toNum(row[18]),
+        totalCollection: toNum(row[19]),
+        amtPct: toNum(row[20]),
+        prevOverdue: toNum(row[21]),
+        runningOverdue: toNum(row[23]),
+        overdueChange: toNum(row[25])
+      };
+    }
+    return out;
+  }
+
+  function toNum(v) {
+    if (v === "" || v === null || v === undefined) return null;
+    const n = parseFloat(String(v).replace(/,/g, ""));
+    return isNaN(n) ? null : n;
+  }
+
+  function getDistrictForPlaza(plaza) {
+    const found = PLAZA_DISTRICT.find(m => m.plaza === plaza);
+    if (!found) return null;
+    return normalizeDistrict(found.district);
+  }
+
+  function normalizeDistrict(name) {
+    const map = {
+      "Barishal": "Barisal",
+      "Chapainawabganj": "Nawabganj",
+      "Chattogram": "Chittagong",
+      "Moulvibazar": "Maulvibazar",
+      "Netrokona": "Netrakona",
+      "Cumilla": "Comilla",
+      "Jashore": "Jessore",
+      "Khagrachhari": "Khagrachhari"
+    };
+    return map[name] || name;
+  }
+
+  function computeDistrictStats() {
+    const stats = {};
+    if (!plazaData) return stats;
+
+    Object.keys(plazaData).forEach(plaza => {
+      const district = getDistrictForPlaza(plaza);
+      if (!district) return;
+      if (!stats[district]) {
+        stats[district] = { pcts: [], amounts: [], overdues: [], plazas: 0 };
+      }
+      const d = plazaData[plaza];
+      if (d.qtyPct !== null) stats[district].pcts.push(d.qtyPct);
+      if (d.amtPct !== null) stats[district].amounts.push(d.amtPct);
+      if (d.overdueChange !== null) stats[district].overdues.push(d.overdueChange);
+      stats[district].plazas++;
     });
-    if (SVGMap.paths.length) SVGMap.updateStyles(getPathStyle);
+
+    Object.keys(stats).forEach(d => {
+      stats[d].avgQtyPct = avg(stats[d].pcts);
+      stats[d].avgAmtPct = avg(stats[d].amounts);
+      stats[d].sumOverdueChange = sum(stats[d].overdues);
+    });
+    return stats;
   }
 
-  function initMap() {
-    SVGMap.render(bdData, toggleLocation, getPathStyle);
+  function avg(arr) {
+    if (!arr.length) return null;
+    return arr.reduce((a, b) => a + b, 0) / arr.length;
   }
 
-  function getLocationName(feature) {
-    const name = feature.properties.shapeName;
-    return BD_DISTRICTS[name] ? BD_DISTRICTS[name].en : name;
+  function sum(arr) {
+    if (!arr.length) return null;
+    return arr.reduce((a, b) => a + b, 0);
   }
 
-  function getLocationBNName(feature) {
-    const name = feature.properties.shapeName;
-    return BD_DISTRICTS[name] ? BD_DISTRICTS[name].bn : "";
+  function getMetricValue(district) {
+    const s = districtStats[district];
+    if (!s) return null;
+    if (currentMetric === "collectedQty") return s.avgQtyPct;
+    if (currentMetric === "collectableAmt") return s.avgAmtPct;
+    if (currentMetric === "overdueChange") return s.sumOverdueChange;
+    return null;
   }
 
-  function getLocationId(feature) {
-    return feature.properties.shapeName;
+  function getColorForValue(value, metric) {
+    if (value === null || value === undefined) return "#64748b";
+
+    if (metric === "overdueChange") {
+      if (value < 0) return "#16a34a";
+      if (value === 0) return "#facc15";
+      return "#dc2626";
+    }
+
+    if (value < 70) return "#dc2626";
+    if (value < 80) return "#facc15";
+    if (value < 90) return "#86efac";
+    return "#16a34a";
   }
 
   function getPathStyle(feature) {
-    const isVisited = visited.has(getLocationId(feature));
-    const cs = getComputedStyle(document.documentElement);
-
-    if (isVisited) {
-      const fillRaw = cs.getPropertyValue("--theme-fill").trim() || "rgba(56,189,248,0.6)";
-      const strokeRaw = cs.getPropertyValue("--theme-stroke").trim() || "#0ea5e9";
-      return {
-        fill: fillRaw,
-        stroke: strokeRaw,
-        strokeWidth: 1.5,
-        fillOpacity: 0.65,
-        className: "visited-region"
-      };
-    }
+    const shape = feature.properties.shapeName;
+    const value = getMetricValue(shape);
+    const color = getColorForValue(value, currentMetric);
     return {
-      fill: "#94a3b8",
+      fill: color,
       stroke: "rgba(255,255,255,0.6)",
       strokeWidth: 1,
-      fillOpacity: 0.08,
-      className: "unvisited-region"
+      fillOpacity: 0.85,
+      className: value === null ? "no-data-region" : "data-region"
     };
   }
 
-  function toggleLocation(feature) {
-    const id = getLocationId(feature);
-    const name = getLocationName(feature);
-
-    if (visited.has(id)) {
-      visited.delete(id);
-    } else {
-      visited.add(id);
-    }
-
-    SVGMap.updateStyles(getPathStyle);
-    updateSidebar();
-    updateProgress();
-    saveData();
-    showToast(`"${name}" ${visited.has(id) ? "added" : "removed"}`);
+  function isFiltered(shape) {
+    return districtFilter !== "all" && districtFilter !== shape;
   }
 
-  function getVisitedList() {
-    return bdData.features.map(feature => {
-      const id = getLocationId(feature);
-      return {
-        id,
-        name: getLocationName(feature),
-        bnName: getLocationBNName(feature),
-        isVisited: visited.has(id),
-        feature
-      };
-    }).sort((a, b) => a.name.localeCompare(b.name));
+  function renderMap() {
+    const data = {
+      ...bdData,
+      features: bdData.features.filter(f => {
+        return !isFiltered(f.properties.shapeName);
+      })
+    };
+    SVGMap.render(data, "bd", () => {}, getPathStyle);
+    document.getElementById("mapEmpty").style.display = "none";
   }
 
   function updateSidebar(filter = "") {
-    const list = getVisitedList();
-    const normalizedFilter = filter.trim().toLowerCase();
-    const filtered = normalizedFilter
-      ? list.filter(item => item.name.toLowerCase().includes(normalizedFilter) ||
-                            (item.bnName && item.bnName.includes(filter.trim())))
-      : list;
+    const list = [];
+    bdData.features.forEach(f => {
+      const shape = f.properties.shapeName;
+      const name = BD_DISTRICTS[shape] ? BD_DISTRICTS[shape].en : shape;
+      const value = getMetricValue(shape);
+      list.push({ shape, name, value, isFiltered: isFiltered(shape) });
+    });
+
+    const filtered = list.filter(item => {
+      if (districtFilter !== "all" && item.shape !== districtFilter) return false;
+      if (filter) {
+        return item.name.toLowerCase().includes(filter.toLowerCase());
+      }
+      return true;
+    }).sort((a, b) => a.name.localeCompare(b.name));
 
     const container = document.getElementById("locationList");
     container.innerHTML = "";
 
     filtered.forEach(item => {
-      container.appendChild(createListItem(item));
+      const div = document.createElement("div");
+      div.className = "location-item";
+      const color = getColorForValue(item.value, currentMetric);
+      div.innerHTML = `
+        <span class="district-dot" style="background:${color}"></span>
+        <span class="location-name">${item.name}</span>
+        <span class="location-value">${item.value !== null ? item.value.toFixed(1) + "%" : "—"}</span>
+      `;
+      container.appendChild(div);
     });
 
     if (filtered.length === 0) {
@@ -185,212 +284,12 @@ const App = (() => {
     }
   }
 
-  function createListItem(item) {
-    const div = document.createElement("div");
-    div.className = "location-item" + (item.isVisited ? " visited" : "");
-    div.dataset.id = item.id;
-    div.setAttribute("role", "button");
-    div.setAttribute("tabindex", "0");
-    div.setAttribute("aria-pressed", String(item.isVisited));
-
-    div.innerHTML = `
-      <div class="location-checkbox">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="20 6 9 17 4 12"/>
-        </svg>
-      </div>
-      <span class="location-name">${item.name}${item.bnName ? ' <span style="color:var(--text-dim);font-size:0.8em">' + item.bnName + '</span>' : ''}</span>
-    `;
-
-    const toggle = () => toggleLocation(item.feature);
-    div.addEventListener("click", toggle);
-    div.addEventListener("keydown", event => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        toggle();
-      }
-    });
-
-    return div;
-  }
-
-  function updateProgress() {
-    const total = bdData ? bdData.features.length : 64;
-    const count = visited.size;
-    document.getElementById("progressCount").textContent = count;
-    document.getElementById("totalCount").textContent = total;
-    const percentage = total > 0 ? (count / total * 100) : 0;
-    document.getElementById("progressBar").style.width = percentage + "%";
-  }
-
   function showToast(message) {
     const toast = document.getElementById("toast");
     toast.textContent = message;
     toast.classList.add("show");
     clearTimeout(toast._timer);
-    toast._timer = setTimeout(() => toast.classList.remove("show"), 2000);
-  }
-
-  function showImagePreview(dataUrl) {
-    const placeholder = document.getElementById("imagePlaceholder");
-    placeholder.innerHTML = `<img src="${dataUrl}" alt="Profile">`;
-  }
-
-  function selectAll() {
-    bdData.features.forEach(feature => visited.add(getLocationId(feature)));
-    SVGMap.updateStyles(getPathStyle);
-    updateSidebar();
-    updateProgress();
-    saveData();
-    showToast(`All ${visited.size} districts selected`);
-  }
-
-  function clearAll() {
-    visited.clear();
-    SVGMap.updateStyles(getPathStyle);
-    updateSidebar();
-    updateProgress();
-    saveData();
-    showToast("All districts cleared");
-  }
-
-  async function exportImage(format) {
-    const overlay = createExportOverlay();
-    document.body.appendChild(overlay);
-    setTimeout(() => overlay.classList.add("show"), 10);
-
-    try {
-      await new Promise(resolve => setTimeout(resolve, 50));
-      const svgEl = SVGMap.svg;
-      const filename = `Bangladesh_Travel_Map_${customName || "MyMap"}`;
-      const canvas = await svgToCanvas(svgEl, 2);
-      if (format === "png") {
-        downloadCanvas(canvas, `${filename}.png`);
-      } else if (format === "jpg") {
-        downloadCanvas(canvas, `${filename}.jpg`, "image/jpeg", 0.9);
-      } else if (format === "pdf") {
-        exportPdf(canvas, filename);
-      }
-      showToast(`Exported as ${format.toUpperCase()}`);
-    } catch (err) {
-      console.error("Export error:", err);
-      showToast("Export failed. Please try again.");
-    } finally {
-      overlay.classList.remove("show");
-      setTimeout(() => overlay.remove(), 300);
-    }
-  }
-
-  async function svgToCanvas(svgEl, scale = 2) {
-    const rect = svgEl.getBoundingClientRect();
-    const width = rect.width || 800;
-    const height = rect.height || 420;
-
-    const cloned = svgEl.cloneNode(true);
-    cloned.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    cloned.setAttribute("width", width);
-    cloned.setAttribute("height", height);
-
-    const serializer = new XMLSerializer();
-    let source = serializer.serializeToString(cloned);
-    source = '<?xml version="1.0" encoding="UTF-8"?>' + source;
-
-    const svg64 = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(source)));
-
-    const img = new Image();
-    await new Promise((resolve, reject) => {
-      img.onload = resolve;
-      img.onerror = () => reject(new Error("Failed to load SVG image"));
-      img.src = svg64;
-    });
-
-    const canvas = document.createElement("canvas");
-    canvas.width = width * scale;
-    canvas.height = height * scale;
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#0f172a";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    return canvas;
-  }
-
-  function createExportOverlay() {
-    const div = document.createElement("div");
-    div.className = "export-overlay";
-    div.innerHTML = `
-      <div class="export-content">
-        <div class="export-spinner"></div>
-        <div class="export-text">Generating your map...</div>
-      </div>
-    `;
-    return div;
-  }
-
-  function downloadCanvas(canvas, filename, mimeType, quality) {
-    const link = document.createElement("a");
-    link.download = filename;
-    link.href = mimeType
-      ? canvas.toDataURL(mimeType, quality)
-      : canvas.toDataURL("image/png");
-    link.click();
-  }
-
-  function exportPdf(canvas, filename) {
-    const { jsPDF } = window.jspdf;
-    const imgData = canvas.toDataURL("image/png");
-    const orientation = canvas.width > canvas.height ? "landscape" : "portrait";
-    const pdf = new jsPDF({ orientation, unit: "px", format: [canvas.width, canvas.height] });
-    pdf.addImage(imgData, "PNG", 0, 0, canvas.width, canvas.height);
-    pdf.save(`${filename}.pdf`);
-  }
-
-  function initEventListeners() {
-    document.getElementById("searchInput").addEventListener("input", event => {
-      updateSidebar(event.target.value);
-    });
-
-    document.getElementById("selectAllBtn").addEventListener("click", selectAll);
-    document.getElementById("clearAllBtn").addEventListener("click", clearAll);
-
-    document.getElementById("exportPng").addEventListener("click", () => exportImage("png"));
-    document.getElementById("exportJpg").addEventListener("click", () => exportImage("jpg"));
-    document.getElementById("exportPdf").addEventListener("click", () => exportImage("pdf"));
-    document.getElementById("copyData").addEventListener("click", copyData);
-
-    document.getElementById("customName").addEventListener("input", event => {
-      customName = event.target.value;
-      saveData();
-    });
-
-    document.getElementById("customImage").addEventListener("change", event => {
-      const file = event.target.files[0];
-      if (!file) return;
-      if (file.size > 2 * 1024 * 1024) {
-        showToast("Image too large (max 2MB)");
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = loadEvent => {
-        customImage = loadEvent.target.result;
-        showImagePreview(customImage);
-        saveData();
-        showToast("Image added");
-      };
-      reader.readAsDataURL(file);
-    });
-  }
-
-  function copyData() {
-    const data = {
-      name: customName || "Traveler",
-      map: "bd",
-      visited: Array.from(visited),
-      theme: document.documentElement.getAttribute("data-theme") || "default",
-      date: new Date().toISOString().split("T")[0]
-    };
-    navigator.clipboard.writeText(JSON.stringify(data, null, 2))
-      .then(() => showToast("Data copied to clipboard!"))
-      .catch(() => showToast("Failed to copy data"));
+    toast._timer = setTimeout(() => toast.classList.remove("show"), 2500);
   }
 
   return { init };

@@ -3,7 +3,7 @@ const SVGMap = {
   paths: [],
   hoverId: null,
 
-  render(data, onPathClick, getPathStyle) {
+  render(data, type, onPathClick, getPathStyle) {
     const container = document.getElementById("map");
     const bounds = this.getBounds(data);
     const width = 800;
@@ -39,7 +39,7 @@ const SVGMap = {
       path.style.cursor = "pointer";
       path.addEventListener("click", event => {
         event.stopPropagation();
-        onPathClick(feature);
+        onPathClick(feature, type);
       });
       path.addEventListener("mouseenter", () => {
         this.hoverId = id;
