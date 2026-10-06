@@ -115,7 +115,7 @@ const App = (() => {
       const row = rows[r];
       if (!row) continue;
       const plaza = String(row[7] || "").trim();
-      if (!plaza) continue;
+      if (!plaza || plaza === "Plaza") continue;
 
       out[plaza] = {
         collectableQty: toNum(row[9]),
