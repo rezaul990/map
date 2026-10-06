@@ -17,6 +17,7 @@ const App = (() => {
     populateDistrictFilter();
     initMetricTabs();
     initEventListeners();
+    updateLegend();
   }
 
   async function loadBDData() {
@@ -46,6 +47,7 @@ const App = (() => {
         document.querySelectorAll(".metric-tab").forEach(t => t.classList.remove("active"));
         tab.classList.add("active");
         currentMetric = tab.dataset.metric;
+        updateLegend();
         renderMap();
         updateSidebar();
       });
@@ -207,16 +209,40 @@ const App = (() => {
   function getColorForValue(value, metric) {
     if (value === null || value === undefined) return "#64748b";
 
+    // Overdue Increase/(Decrease): 0 or negative = Dark Green, >0 = Dark Red
     if (metric === "overdueChange") {
-      if (value < 0) return "#16a34a";
-      if (value === 0) return "#facc15";
-      return "#dc2626";
+      if (value <= 0) return "#166534";
+      return "#7f1d1d";
     }
 
+    // Collected Acc Qty & Collectable Amt. (%): percentage bands
     if (value < 70) return "#dc2626";
     if (value < 80) return "#facc15";
     if (value < 90) return "#86efac";
     return "#16a34a";
+  }
+
+  function updateLegend() {
+    const legend = document.getElementById("legend");
+    let items;
+    if (currentMetric === "overdueChange") {
+      items = [
+        { color: "#166534", label: "0 এবং নেতিবাচক (কমানো)" },
+        { color: "#7f1d1d", label: "> 0 (বৃদ্ধি)" },
+        { color: "#64748b", label: "কোনো ডেটা নেই" }
+      ];
+    } else {
+      items = [
+        { color: "#dc2626", label: "0 – 69.99%" },
+        { color: "#facc15", label: "70 – 79.99%" },
+        { color: "#86efac", label: "80 – 89.99%" },
+        { color: "#16a34a", label: "90 – 100%" },
+        { color: "#64748b", label: "কোনো ডেটা নেই" }
+      ];
+    }
+    legend.innerHTML = items.map(it =>
+      `<div class="legend-item"><span class="legend-swatch" style="background:${it.color}"></span> ${it.label}</div>`
+    ).join("");
   }
 
   function getPathStyle(feature) {
@@ -257,8 +283,13 @@ const App = (() => {
     const name = BD_DISTRICTS[shape] ? BD_DISTRICTS[shape].en : shape;
     const bn = BD_DISTRICTS[shape] ? BD_DISTRICTS[shape].bn : "";
     const value = getMetricValue(shape);
-    const pct = value !== null ? value.toFixed(1) + "%" : "—";
-    return `<strong>${name} ${bn}</strong><br><span class="tt-value">${pct}</span>`;
+    let display = "—";
+    if (value !== null) {
+      display = currentMetric === "overdueChange"
+        ? (value > 0 ? "+" : "") + value.toLocaleString(undefined, { maximumFractionDigits: 0 })
+        : value.toFixed(1) + "%";
+    }
+    return `<strong>${name} ${bn}</strong><br><span class="tt-value">${display}</span>`;
   }
 
   function updateSidebar(filter = "") {
@@ -285,10 +316,15 @@ const App = (() => {
       const div = document.createElement("div");
       div.className = "location-item";
       const color = getColorForValue(item.value, currentMetric);
+      const display = item.value !== null
+        ? (currentMetric === "overdueChange"
+            ? (item.value > 0 ? "+" : "") + item.value.toLocaleString(undefined, { maximumFractionDigits: 0 })
+            : item.value.toFixed(1) + "%")
+        : "—";
       div.innerHTML = `
         <span class="district-dot" style="background:${color}"></span>
         <span class="location-name">${item.name}</span>
-        <span class="location-value">${item.value !== null ? item.value.toFixed(1) + "%" : "—"}</span>
+        <span class="location-value">${display}</span>
       `;
       container.appendChild(div);
     });
