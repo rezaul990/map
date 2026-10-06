@@ -157,7 +157,9 @@ const App = (() => {
       "Netrokona": "Netrakona",
       "Cumilla": "Comilla",
       "Jashore": "Jessore",
-      "Khagrachhari": "Khagrachhari"
+      "Khagrachhari": "Khagrachhari",
+      "Bogura": "Bogra",
+      "Brahmanbaria": "Brahamanbaria"
     };
     return map[name] || name;
   }
