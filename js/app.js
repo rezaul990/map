@@ -1,15 +1,15 @@
 const App = (() => {
-  let currentMap = "bd";
-  let visited = { bd: new Set(), world: new Set() };
-  let bdData = null, worldData = null;
-  let customName = "", customImage = null;
+  let visited = new Set();
+  let bdData = null;
+  let customName = "";
+  let customImage = null;
   const STORAGE_KEY = "travel-map-state";
 
   async function init() {
-    await Promise.all([loadBDData(), loadWorldData()]);
+    await loadBDData();
     loadData();
     initThemePicker();
-    initMap("bd");
+    initMap();
     initEventListeners();
     updateSidebar();
     updateProgress();
@@ -17,32 +17,23 @@ const App = (() => {
 
   async function loadBDData() {
     const res = await fetch("data/bangladesh.geojson");
+    if (!res.ok) throw new Error("Failed to load Bangladesh map data");
     bdData = await res.json();
-  }
-
-  async function loadWorldData() {
-    const res = await fetch("data/world.geojson");
-    const data = await res.json();
-    worldData = {
-      ...data,
-      features: data.features.filter(f => {
-        const name = (f.properties && f.properties.name) || "";
-        return name !== "Antarctica";
-      })
-    };
   }
 
   function loadData() {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-      if (saved.bd) visited.bd = new Set(saved.bd);
-      if (saved.world) visited.world = new Set(saved.world);
+      const knownIds = new Set(bdData.features.map(getLocationId));
+      if (Array.isArray(saved.bd)) {
+        visited = new Set(saved.bd.filter(id => knownIds.has(id)));
+      }
       if (saved.theme) setTheme(saved.theme);
-      if (saved.name) {
+      if (typeof saved.name === "string") {
         customName = saved.name;
         document.getElementById("customName").value = saved.name;
       }
-      if (saved.image) {
+      if (typeof saved.image === "string" && saved.image) {
         customImage = saved.image;
         showImagePreview(saved.image);
       }
@@ -53,8 +44,7 @@ const App = (() => {
 
   function saveData() {
     const data = {
-      bd: Array.from(visited.bd),
-      world: Array.from(visited.world),
+      bd: Array.from(visited),
       theme: document.documentElement.getAttribute("data-theme") || "default",
       name: customName,
       image: customImage
@@ -63,14 +53,30 @@ const App = (() => {
   }
 
   function initThemePicker() {
-    const themes = ["default","emerald","sunset","violet","rose","gold","mint","coral","aurora"];
+    const themes = ["default", "emerald", "sunset", "violet", "rose", "gold", "mint", "coral", "aurora"];
     const container = document.getElementById("themePicker");
+    const activeTheme = document.documentElement.getAttribute("data-theme") || "default";
+
     themes.forEach(theme => {
       const swatch = document.createElement("div");
-      swatch.className = "theme-swatch" + (theme === "default" ? " active" : "");
+      swatch.className = "theme-swatch" + (theme === activeTheme ? " active" : "");
       swatch.dataset.theme = theme;
       swatch.title = theme.charAt(0).toUpperCase() + theme.slice(1);
-      swatch.addEventListener("click", () => setTheme(theme));
+      swatch.setAttribute("role", "button");
+      swatch.setAttribute("aria-label", `${swatch.title} theme`);
+      swatch.tabIndex = 0;
+
+      const selectTheme = () => {
+        setTheme(theme);
+        saveData();
+      };
+      swatch.addEventListener("click", selectTheme);
+      swatch.addEventListener("keydown", event => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          selectTheme();
+        }
+      });
       container.appendChild(swatch);
     });
   }
@@ -81,46 +87,32 @@ const App = (() => {
     } else {
       document.documentElement.setAttribute("data-theme", theme);
     }
-    document.querySelectorAll(".theme-swatch").forEach(s => {
-      s.classList.toggle("active", s.dataset.theme === (theme || "default"));
+    document.querySelectorAll(".theme-swatch").forEach(swatch => {
+      swatch.classList.toggle("active", swatch.dataset.theme === (theme || "default"));
     });
     if (SVGMap.paths.length) SVGMap.updateStyles(getPathStyle);
   }
 
-  function initMap(type) {
-    const data = type === "bd" ? bdData : worldData;
-    SVGMap.render(data, type, toggleLocation, getPathStyle);
-    currentMap = type;
-    updateSidebar();
-    updateProgress();
-    document.getElementById("sidebarTitle").textContent =
-      type === "bd" ? "যেসব জেলায় গিয়েছি" : "যেসব দেশে গিয়েছি";
+  function initMap() {
+    SVGMap.render(bdData, toggleLocation, getPathStyle);
   }
 
   function getLocationName(feature) {
-    if (currentMap === "bd") {
-      const name = feature.properties.shapeName;
-      return BD_DISTRICTS[name] ? BD_DISTRICTS[name].en : name;
-    }
-    return feature.properties.name;
+    const name = feature.properties.shapeName;
+    return BD_DISTRICTS[name] ? BD_DISTRICTS[name].en : name;
   }
 
   function getLocationBNName(feature) {
-    if (currentMap === "bd") {
-      const name = feature.properties.shapeName;
-      return BD_DISTRICTS[name] ? BD_DISTRICTS[name].bn : "";
-    }
-    return "";
+    const name = feature.properties.shapeName;
+    return BD_DISTRICTS[name] ? BD_DISTRICTS[name].bn : "";
   }
 
   function getLocationId(feature) {
-    if (currentMap === "bd") return feature.properties.shapeName;
-    return feature.id || feature.properties.name;
+    return feature.properties.shapeName;
   }
 
   function getPathStyle(feature) {
-    const id = getLocationId(feature);
-    const isVisited = visited[currentMap].has(id);
+    const isVisited = visited.has(getLocationId(feature));
     const cs = getComputedStyle(document.documentElement);
 
     if (isVisited) {
@@ -143,46 +135,49 @@ const App = (() => {
     };
   }
 
-  function toggleLocation(feature, mapType) {
+  function toggleLocation(feature) {
     const id = getLocationId(feature);
     const name = getLocationName(feature);
 
-    if (visited[mapType].has(id)) {
-      visited[mapType].delete(id);
+    if (visited.has(id)) {
+      visited.delete(id);
     } else {
-      visited[mapType].add(id);
+      visited.add(id);
     }
 
     SVGMap.updateStyles(getPathStyle);
     updateSidebar();
     updateProgress();
     saveData();
-    showToast(`"${name}" ${visited[mapType].has(id) ? "added" : "removed"}`);
+    showToast(`"${name}" ${visited.has(id) ? "added" : "removed"}`);
   }
 
   function getVisitedList() {
-    const data = currentMap === "bd" ? bdData : worldData;
-    return data.features.map(f => {
-      const id = getLocationId(f);
-      const name = getLocationName(f);
-      const bnName = getLocationBNName(f);
-      const isVisited = visited[currentMap].has(id);
-      return { id, name, bnName, isVisited, feature: f };
+    return bdData.features.map(feature => {
+      const id = getLocationId(feature);
+      return {
+        id,
+        name: getLocationName(feature),
+        bnName: getLocationBNName(feature),
+        isVisited: visited.has(id),
+        feature
+      };
     }).sort((a, b) => a.name.localeCompare(b.name));
   }
 
   function updateSidebar(filter = "") {
     const list = getVisitedList();
-    const filtered = filter
-      ? list.filter(item => item.name.toLowerCase().includes(filter.toLowerCase()) ||
-                            (item.bnName && item.bnName.includes(filter)))
+    const normalizedFilter = filter.trim().toLowerCase();
+    const filtered = normalizedFilter
+      ? list.filter(item => item.name.toLowerCase().includes(normalizedFilter) ||
+                            (item.bnName && item.bnName.includes(filter.trim())))
       : list;
 
     const container = document.getElementById("locationList");
     container.innerHTML = "";
 
     filtered.forEach(item => {
-      container.appendChild(createListItem(item, currentMap));
+      container.appendChild(createListItem(item));
     });
 
     if (filtered.length === 0) {
@@ -190,12 +185,13 @@ const App = (() => {
     }
   }
 
-  function createListItem(item, type) {
+  function createListItem(item) {
     const div = document.createElement("div");
     div.className = "location-item" + (item.isVisited ? " visited" : "");
     div.dataset.id = item.id;
-
-    const flag = type === "world" && item.feature.id ? flagFromAlpha3(item.feature.id) : "";
+    div.setAttribute("role", "button");
+    div.setAttribute("tabindex", "0");
+    div.setAttribute("aria-pressed", String(item.isVisited));
 
     div.innerHTML = `
       <div class="location-checkbox">
@@ -204,20 +200,23 @@ const App = (() => {
         </svg>
       </div>
       <span class="location-name">${item.name}${item.bnName ? ' <span style="color:var(--text-dim);font-size:0.8em">' + item.bnName + '</span>' : ''}</span>
-      ${flag ? `<span class="location-flag">${flag}</span>` : ''}
     `;
 
-    div.addEventListener("click", () => {
-      toggleLocation(item.feature, type);
+    const toggle = () => toggleLocation(item.feature);
+    div.addEventListener("click", toggle);
+    div.addEventListener("keydown", event => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggle();
+      }
     });
 
     return div;
   }
 
   function updateProgress() {
-    const data = currentMap === "bd" ? bdData : worldData;
-    const total = data ? data.features.length : (currentMap === "bd" ? 64 : 195);
-    const count = visited[currentMap].size;
+    const total = bdData ? bdData.features.length : 64;
+    const count = visited.size;
     document.getElementById("progressCount").textContent = count;
     document.getElementById("totalCount").textContent = total;
     const percentage = total > 0 ? (count / total * 100) : 0;
@@ -238,24 +237,21 @@ const App = (() => {
   }
 
   function selectAll() {
-    const data = currentMap === "bd" ? bdData : worldData;
-    data.features.forEach(f => {
-      visited[currentMap].add(getLocationId(f));
-    });
+    bdData.features.forEach(feature => visited.add(getLocationId(feature)));
     SVGMap.updateStyles(getPathStyle);
     updateSidebar();
     updateProgress();
     saveData();
-    showToast(`All ${visited[currentMap].size} selected`);
+    showToast(`All ${visited.size} districts selected`);
   }
 
   function clearAll() {
-    visited[currentMap].clear();
+    visited.clear();
     SVGMap.updateStyles(getPathStyle);
     updateSidebar();
     updateProgress();
     saveData();
-    showToast("All cleared");
+    showToast("All districts cleared");
   }
 
   async function exportImage(format) {
@@ -264,11 +260,9 @@ const App = (() => {
     setTimeout(() => overlay.classList.add("show"), 10);
 
     try {
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise(resolve => setTimeout(resolve, 50));
       const svgEl = SVGMap.svg;
-      const title = currentMap === "bd" ? "Bangladesh Travel Map" : "World Travel Map";
-      const filename = `${title}_${customName || "MyMap"}`;
-
+      const filename = `Bangladesh_Travel_Map_${customName || "MyMap"}`;
       const canvas = await svgToCanvas(svgEl, 2);
       if (format === "png") {
         downloadCanvas(canvas, `${filename}.png`);
@@ -351,16 +345,8 @@ const App = (() => {
   }
 
   function initEventListeners() {
-    document.querySelectorAll(".tab").forEach(tab => {
-      tab.addEventListener("click", () => {
-        document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-        tab.classList.add("active");
-        initMap(tab.dataset.map);
-      });
-    });
-
-    document.getElementById("searchInput").addEventListener("input", (e) => {
-      updateSidebar(e.target.value);
+    document.getElementById("searchInput").addEventListener("input", event => {
+      updateSidebar(event.target.value);
     });
 
     document.getElementById("selectAllBtn").addEventListener("click", selectAll);
@@ -369,24 +355,23 @@ const App = (() => {
     document.getElementById("exportPng").addEventListener("click", () => exportImage("png"));
     document.getElementById("exportJpg").addEventListener("click", () => exportImage("jpg"));
     document.getElementById("exportPdf").addEventListener("click", () => exportImage("pdf"));
-
     document.getElementById("copyData").addEventListener("click", copyData);
 
-    document.getElementById("customName").addEventListener("input", (e) => {
-      customName = e.target.value;
+    document.getElementById("customName").addEventListener("input", event => {
+      customName = event.target.value;
       saveData();
     });
 
-    document.getElementById("customImage").addEventListener("change", (e) => {
-      const file = e.target.files[0];
+    document.getElementById("customImage").addEventListener("change", event => {
+      const file = event.target.files[0];
       if (!file) return;
       if (file.size > 2 * 1024 * 1024) {
         showToast("Image too large (max 2MB)");
         return;
       }
       const reader = new FileReader();
-      reader.onload = (ev) => {
-        customImage = ev.target.result;
+      reader.onload = loadEvent => {
+        customImage = loadEvent.target.result;
         showImagePreview(customImage);
         saveData();
         showToast("Image added");
@@ -398,8 +383,8 @@ const App = (() => {
   function copyData() {
     const data = {
       name: customName || "Traveler",
-      map: currentMap,
-      visited: Array.from(visited[currentMap]),
+      map: "bd",
+      visited: Array.from(visited),
       theme: document.documentElement.getAttribute("data-theme") || "default",
       date: new Date().toISOString().split("T")[0]
     };
