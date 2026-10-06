@@ -415,6 +415,54 @@ body {
   pointer-events: auto;
 }
 
+.district-label {
+  font-size: 10px;
+  font-weight: 600;
+  fill: #fff;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.55);
+  stroke-width: 1.5px;
+  pointer-events: none;
+  opacity: 0.9;
+  font-family: var(--font);
+}
+
+.district-label.hover {
+  opacity: 1;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.map-tooltip {
+  position: absolute;
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  color: var(--text);
+  pointer-events: none;
+  z-index: 10;
+  box-shadow: var(--shadow-sm);
+  transition: opacity 0.15s ease;
+  white-space: nowrap;
+  max-width: 260px;
+  backdrop-filter: blur(6px);
+}
+
+.map-tooltip strong {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 0.9rem;
+}
+
+.map-tooltip .tt-value {
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Toast */
 .toast {
   position: fixed;

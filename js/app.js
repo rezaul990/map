@@ -243,8 +243,22 @@ const App = (() => {
         return !isFiltered(f.properties.shapeName);
       })
     };
-    SVGMap.render(data, "bd", () => {}, getPathStyle);
+    SVGMap.render(data, "bd", () => {}, getPathStyle, getLabel, getTooltip);
     document.getElementById("mapEmpty").style.display = "none";
+  }
+
+  function getLabel(feature) {
+    const shape = feature.properties.shapeName;
+    return BD_DISTRICTS[shape] ? BD_DISTRICTS[shape].bn : shape;
+  }
+
+  function getTooltip(feature) {
+    const shape = feature.properties.shapeName;
+    const name = BD_DISTRICTS[shape] ? BD_DISTRICTS[shape].en : shape;
+    const bn = BD_DISTRICTS[shape] ? BD_DISTRICTS[shape].bn : "";
+    const value = getMetricValue(shape);
+    const pct = value !== null ? value.toFixed(1) + "%" : "—";
+    return `<strong>${name} ${bn}</strong><br><span class="tt-value">${pct}</span>`;
   }
 
   function updateSidebar(filter = "") {
