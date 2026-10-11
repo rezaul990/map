@@ -70,10 +70,6 @@ const App = (() => {
 
   const NO_DATA_COLOR = "#64748b";
 
-  /** Colours used by the adaptive (quartile) scale, best -> worst. */
-  const RANK_COLORS = { best: "#16a34a", good: "#86efac", warn: "#facc15", bad: "#dc2626" };
-  const OVERDUE_RANK_COLORS = { best: "#16a34a", warn: "#facc15", bad: "#dc2626" };
-
   const nf = new Intl.NumberFormat("en-IN");
 
   const state = {
@@ -82,7 +78,6 @@ const App = (() => {
     stats: {},
     plazaIndex: new Map(),
     metric: "collectedQty",
-    scale: "relative",
     districtFilter: "all",
     search: "",
     sort: "name-asc",
@@ -103,7 +98,6 @@ const App = (() => {
   async function init() {
     const prefs = loadPrefs();
     applyTheme(prefs.theme || "dark");
-    state.scale = prefs.scale === "fixed" ? "fixed" : "relative";
     bindStaticEvents();
     initMap();
 
@@ -192,13 +186,6 @@ const App = (() => {
     document.getElementById("sortSelect").addEventListener("change", event => {
       state.sort = event.target.value;
       renderList();
-    });
-
-    document.getElementById("scaleSelect").addEventListener("change", event => {
-      state.scale = event.target.value === "fixed" ? "fixed" : "relative";
-      savePrefs({ scale: state.scale });
-      renderAll();
-      showToast(state.scale === "fixed" ? "নির্দিষ্ট থ্রেশহোল্ড (৬০/৭০/৮০%) দেখানো হচ্ছে" : "তুলনামূলক স্কেল দেখানো হচ্ছে");
     });
 
     document.querySelectorAll(".metric-tab").forEach(tab => {
@@ -577,18 +564,14 @@ const App = (() => {
   let bandCache = { key: null, bands: [] };
 
   /**
-   * Colour bands for the active metric.
-   *
-   * "fixed"    -> absolute thresholds (60/70/80% for percents, Tk bands for overdue).
-   * "relative" -> quartiles of the districts present in the data, so reports whose
-   *               collection rates sit far below 60% (e.g. 5–30%) still produce a
-   *               readable map instead of a solid red country. Overdue is judged
-   *               against each district's own overdue book.
+   * Colour bands for the active metric: absolute thresholds for every metric —
+   * 60/70/80% for the collection percentages, Tk bands for overdue change.
+   * Both percentage metrics share the same band set.
    */
   function bands() {
-    const key = [state.metric, state.scale, state.entries.length, Object.keys(state.stats).length].join("|");
+    const key = [state.metric, state.entries.length, Object.keys(state.stats).length].join("|");
     if (bandCache.key === key) return bandCache.bands;
-    const computed = state.scale === "fixed" ? fixedBands() : relativeBands();
+    const computed = fixedBands();
     bandCache = { key, bands: computed };
     return computed;
   }
@@ -596,48 +579,6 @@ const App = (() => {
   function fixedBands() {
     return (state.metric === "overdueChange" ? FIXED_OVERDUE_BANDS : FIXED_PERCENT_BANDS)
       .map(band => Object.assign({}, band));
-  }
-
-  function relativeBands() {
-    const percent = metricConfig().kind === "percent";
-    const values = [];
-    Object.keys(state.stats).forEach(shape => {
-      const value = metricValue(shape);
-      if (value !== null && value !== undefined && isFinite(value)) values.push(value);
-    });
-    if (values.length < 4) return fixedBands();
-
-    values.sort((a, b) => a - b);
-    const q = p => quantile(values, p);
-    const q1 = q(0.25), q2 = q(0.5), q3 = q(0.75);
-    const fmt = v => isFinite(v) ? (percent ? v.toFixed(2) + "%" : nf.format(Math.round(v))) : "—";
-
-    if (!percent) {
-      // overdue: relative growth compared with each district's own overdue book
-      const [low, high] = [q(0.34), q(0.67)];
-      return [
-        { color: OVERDUE_RANK_COLORS.best, label: `কম বেড়েছে / কমেছে (নিচের ১/৩)`, min: -Infinity, max: low, tone: "good" },
-        { color: OVERDUE_RANK_COLORS.warn, label: `মাঝারি বৃদ্ধি (${fmt(low)} – ${fmt(high)})`, min: low, max: high, tone: "warn" },
-        { color: OVERDUE_RANK_COLORS.bad, label: `সবচেয়ে বেশি বৃদ্ধি (${fmt(high)} এর বেশি)`, min: high, max: Infinity, tone: "bad" }
-      ];
-    }
-
-    return [
-      { color: RANK_COLORS.bad, label: `সবচেয়ে দুর্বল ২৫% (${fmt(q1)} বা কম)`, min: -Infinity, max: q1, tone: "bad" },
-      { color: RANK_COLORS.warn, label: `২৫–৫০% (${fmt(q1)} – ${fmt(q2)})`, min: q1, max: q2, tone: "warn" },
-      { color: RANK_COLORS.good, label: `৫০–৭৫% (${fmt(q2)} – ${fmt(q3)})`, min: q2, max: q3, tone: "ok" },
-      { color: RANK_COLORS.best, label: `সেরা ২৫% (${fmt(q3)} এর বেশি)`, min: q3, max: Infinity, tone: "good" }
-    ];
-  }
-
-  /** Linear-interpolated percentile of a sorted numeric array. */
-  function quantile(sorted, p) {
-    if (!sorted.length) return null;
-    const index = (sorted.length - 1) * p;
-    const lower = Math.floor(index);
-    const upper = Math.ceil(index);
-    if (lower === upper) return sorted[lower];
-    return sorted[lower] + (sorted[upper] - sorted[lower]) * (index - lower);
   }
 
   function colorFor(value) {
@@ -845,10 +786,7 @@ const App = (() => {
     renderList();
     const hint = document.getElementById("metricHint");
     if (hint) {
-      const scaleNote = state.scale === "fixed"
-        ? " • রঙ: নির্দিষ্ট থ্রেশহোল্ড"
-        : " • রঙ: তুলনামূলক (চারটি ভাগে ভাগ করা)";
-      hint.textContent = metricConfig().hint + scaleNote;
+      hint.textContent = metricConfig().hint + " • রঙ: নির্দিষ্ট থ্রেশহোল্ড (৬০/৭০/৮০%)";
     }
   }
 
@@ -950,9 +888,7 @@ const App = (() => {
     const legendEl = document.getElementById("legend");
     const titleEl = document.getElementById("legendMetric");
     if (titleEl) {
-      titleEl.textContent = metricConfig().label + (state.scale === "fixed"
-        ? " (নির্দিষ্ট থ্রেশহোল্ড)"
-        : " (তুলনামূলক)");
+      titleEl.textContent = metricConfig().label + " (নির্দিষ্ট থ্রেশহোল্ড)";
     }
     const counts = new Map();
     let noData = 0;

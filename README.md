@@ -35,16 +35,13 @@ report totals a region); the plain average of the plaza percentages is shown nex
 Overdue is the sum of the change column, with the previous and running overdue totals shown
 alongside so growth can be judged against the district's overdue book.
 
-**Colour scale**
+**Colour scale (fixed thresholds for every metric)**
 
-- **তুলনামূলক (default)** – quartiles of the districts present in the data, so reports whose
-  collection rates sit far below 70% (e.g. 5–35%) still produce a readable map instead of a
-  solid red country. Overdue is split into "least / medium / most growth" for the same reason.
-- **নির্দিষ্ট** – fixed thresholds: 60 / 70 / 80% for the collection percentages
-  (0–59.99% red `#dc2626`, 60–69.99% yellow `#facc15`, 70–79.99% light green `#86efac`,
-  80–100% dark green `#16a34a`); overdue uses 1 / 15,00,000 / 40,00,000 Tk bands
-  (<1 green `#16a34a`, 1–14,99,999 bright yellow `#FFFF00`, 15,00,000–39,99,999 yellow
-  `#facc15`, 40,00,000+ red `#dc2626`).
+- Collection percentages (Qty and Amt share the same bands): 0–59.99% red `#dc2626`,
+  60–69.99% yellow `#facc15`, 70–79.99% light green `#86efac`, 80–100% dark green `#16a34a`.
+- Overdue Increase/(Decrease): below 1 (zero or a decrease) green `#16a34a`,
+  1–14,99,999 bright yellow `#FFFF00`, 15,00,000–39,99,999 yellow `#facc15`,
+  40,00,000 and above red `#dc2626`.
 
 **Navigation**
 

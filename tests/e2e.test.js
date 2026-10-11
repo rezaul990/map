@@ -234,13 +234,13 @@ function report() {
     const tab = doc.querySelector('.metric-tab[data-metric="overdueChange"]');
     tab.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     assert.ok(tab.classList.contains("active"));
-    // adaptive scale: 3 overdue bands + "no data"
-    assert.strictEqual(doc.querySelectorAll("#legend .legend-item").length, 4);
+    // fixed scale: 4 overdue Tk bands + "no data"
+    assert.strictEqual(doc.querySelectorAll("#legend .legend-item").length, 5);
     assert.strictEqual(legendCounts().reduce((a, b) => a + b, 0), 64);
     assert.ok(doc.getElementById("metricHint").textContent.length > 10);
-    assert.ok(doc.getElementById("metricHint").textContent.includes("তুলনামূলক"));
+    assert.ok(doc.getElementById("metricHint").textContent.includes("নির্দিষ্ট"));
     doc.querySelector('.metric-tab[data-metric="collectedQty"]').dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-    // adaptive scale: 4 percentage bands + "no data"
+    // fixed scale: 4 percentage bands + "no data"
     assert.strictEqual(doc.querySelectorAll("#legend .legend-item").length, 5);
     assert.strictEqual(App.internals.state.metric, "collectedQty");
   });
@@ -254,10 +254,8 @@ function report() {
     assert.strictEqual(withQty.length, withAmt.length);
   });
 
-  check("scale picker switches between adaptive and fixed thresholds", () => {
-    const scale = doc.getElementById("scaleSelect");
-    scale.value = "fixed";
-    scale.dispatchEvent(new window.Event("change", { bubbles: true }));
+  check("legend always uses the fixed absolute thresholds", () => {
+    doc.querySelector('.metric-tab[data-metric="collectedQty"]').dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     const labels = Array.from(doc.querySelectorAll("#legend .legend-label")).map(el => el.textContent);
     assert.ok(labels.some(text => text.includes("60 – 69.99%")), "fixed labels: " + labels.join(" | "));
     assert.ok(labels.some(text => text.includes("70 – 79.99%")), "fixed labels: " + labels.join(" | "));
@@ -269,11 +267,9 @@ function report() {
     assert.ok(overdueLabels.some(text => text.includes("40,00,000+")), "fixed overdue labels: " + overdueLabels.join(" | "));
     assert.ok(overdueLabels.some(text => text.includes("15,00,000")), "fixed overdue labels: " + overdueLabels.join(" | "));
     assert.strictEqual(doc.querySelectorAll("#legend .legend-item").length, 5);
+    assert.strictEqual(legendCounts().reduce((a, b) => a + b, 0), 64);
     doc.querySelector('.metric-tab[data-metric="collectedQty"]').dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-    scale.value = "relative";
-    scale.dispatchEvent(new window.Event("change", { bubbles: true }));
-    const adaptive = Array.from(doc.querySelectorAll("#legend .legend-label")).map(el => el.textContent);
-    assert.ok(adaptive.some(text => text.includes("২৫%")), "adaptive labels: " + adaptive.join(" | "));
+    assert.strictEqual(doc.getElementById("scaleSelect"), null);
   });
 
   check("search matches English, Bengali and plaza names", () => {

@@ -772,7 +772,7 @@ const SVGMap = (() => {
     const footerH = 26 + legendRows * LEGEND_ROW + 18;
     const totalH = HEADER_H + height + footerH;
     const legendColW = width / legendCols;
-    // long adaptive labels ("সবচেয়ে দুর্বল ২৫% (16.93% বা কম)") must stay inside their column
+    // long labels ("15,00,000 – 39,99,999") must stay inside their column
     const legendChars = Math.max(12, Math.floor((legendColW - 68) / 7.6));
 
     const out = document.createElementNS(NS, "svg");

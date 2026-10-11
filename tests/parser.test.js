@@ -184,8 +184,8 @@ ok('real report: metric columns expose the exact report triplets', () => {
     ['prevOverdue', 'runningOverdue', 'overdueChange']);
 });
 
-ok('real report: low percentages still spread across the legend bands', () => {
-  // the sample values are 5.42% - 24.44%, so fixed 60/70/80 thresholds would paint everything red
+ok('real report: low percentages parse correctly (fixed bands paint them all red)', () => {
+  // the sample values are 5.42% - 24.44%, all below the 60% red band
   const out = P.parseRows(reportRows(), D.bdResolveDistrict);
   assert.ok(out.entries.every(e => e.data.amtPct !== null && e.data.amtPct < 30));
   const values = out.entries.map(e => e.data.amtPct).sort((a, b) => a - b);
