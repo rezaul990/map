@@ -219,10 +219,15 @@ const App = (() => {
     document.getElementById("zoomIn").addEventListener("click", () => SVGMap.zoomIn());
     document.getElementById("zoomOut").addEventListener("click", () => SVGMap.zoomOut());
     document.getElementById("zoomReset").addEventListener("click", () => SVGMap.resetView());
-    document.getElementById("zoomChip").addEventListener("click", () => {
-      SVGMap.resetView();
-      showToast("ম্যাপ পুরো ফ্রেমে দেখানো হচ্ছে");
-    });
+    // the chip and the expand button are the only map controls that may be absent in an
+    // older cached document: bind them defensively so a mixed cache can never throw here
+    const zoomChip = document.getElementById("zoomChip");
+    if (zoomChip) {
+      zoomChip.addEventListener("click", () => {
+        SVGMap.resetView();
+        showToast("ম্যাপ পুরো ফ্রেমে দেখানো হচ্ছে");
+      });
+    }
 
     document.getElementById("resetView").addEventListener("click", () => {
       state.districtFilter = "all";
