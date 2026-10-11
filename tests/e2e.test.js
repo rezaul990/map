@@ -461,12 +461,12 @@ function report() {
     assert.ok(clamped >= 0.39 && clamped <= 0.41, "clamped at the minimum: " + clamped);
     assert.strictEqual(doc.getElementById("zoomLevel").textContent, Math.round(clamped * 100) + "%");
     // the shrunken map is centred rather than pinned to a corner
-    const transform = doc.querySelector("#map .map-paths").getAttribute("transform");
+    const transform = doc.querySelector("#map .map-view").getAttribute("transform");
     const tx = Number(transform.match(/translate\((-?[\d.]+)/)[1]);
     assert.ok(tx > 0, "centred horizontally when smaller than the frame: " + transform);
     doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     assert.strictEqual(App.internals.getZoom(), 1);
-    assert.match(doc.querySelector("#map .map-paths").getAttribute("transform"), /translate\(0\.00 0\.00\).*scale\(1/, "reset transform");
+    assert.match(doc.querySelector("#map .map-view").getAttribute("transform"), /translate\(0\.00 0\.00\).*scale\(1/, "reset transform");
   });
 
   check("zoom stays anchored at the pointer after a resize", () => {
@@ -482,10 +482,10 @@ function report() {
     };
     wheel(235, 265);
     assert.ok(App.internals.getZoom() > 1, "zoomed at the panel centre");
-    const centred = doc.querySelector("#map .map-paths").getAttribute("transform");
+    const centred = doc.querySelector("#map .map-view").getAttribute("transform");
     doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     wheel(235, 265);
-    assert.strictEqual(doc.querySelector("#map .map-paths").getAttribute("transform"), centred,
+    assert.strictEqual(doc.querySelector("#map .map-view").getAttribute("transform"), centred,
       "zooming at the same point is repeatable regardless of the host size");
     doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     assert.strictEqual(App.internals.getZoom(), 1, "reset before the next check");
@@ -511,7 +511,7 @@ function report() {
   check("zoom buttons, keyboard and readout drive the map transform", () => {
     const level = doc.getElementById("zoomLevel");
     const reset = doc.getElementById("zoomReset");
-    const group = doc.querySelector("#map .map-paths");
+    const group = doc.querySelector("#map .map-view");
     assert.strictEqual(level.textContent, "100%");
     assert.strictEqual(reset.disabled, true, "reset disabled at 1x");
 
@@ -533,19 +533,120 @@ function report() {
     assert.strictEqual(reset.disabled, true);
   });
 
-  check("district labels counter-scale so they stay readable when zoomed", () => {
-    const label = doc.querySelector('.district-label[data-id="Dhaka"]');
-    assert.strictEqual(label.getAttribute("transform"), "translate(0 0) scale(1.0000)".replace("0 0", label.getAttribute("transform").match(/translate\(([^)]+)\)/)[1]));
-    doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-    const scale = Number(label.getAttribute("transform").match(/scale\(([\d.]+)\)/)[1]);
-    assert.ok(scale < 0.8 && scale > 0.5, "label counter-scaled: " + scale);
+  check("labels live inside the view transform, so they can never drift from the map", () => {
+    const view = doc.querySelector("#map .map-view");
+    const paths = doc.querySelector("#map .map-paths");
+    const labels = doc.querySelector("#map .map-labels");
+    assert.strictEqual(paths.parentNode, view, "paths inside the transformed group");
+    assert.strictEqual(labels.parentNode, view, "labels inside the same transformed group");
+    assert.strictEqual(pathGroupFirstChild(view), "map-paths", "paths are painted below the labels");
+  });
+
+  check("names too small to read are flagged, and come back when there is room", () => {
+    const labels = doc.querySelectorAll("#map .map-labels .district-label");
+    const flagged = () => Array.from(labels).filter(el => el.classList.contains("too-small")).length;
+
+    // a small panel (like a short browser window) -> most names hidden
+    hostBox.width = 375; hostBox.height = 268;
+    stubSvgBox();
+    window.dispatchEvent(new window.Event("resize"));
     doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-    assert.strictEqual(Number(label.getAttribute("transform").match(/scale\(([\d.]+)\)/)[1]), 1);
+    const small = flagged();
+
+    // a big panel (or full-screen) -> names return
+    hostBox.width = 1366; hostBox.height = 900;
+    stubSvgBox();
+    window.dispatchEvent(new window.Event("resize"));
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const large = flagged();
+
+    assert.ok(small > large, `small panel flags ${small}, large panel flags ${large}`);
+    assert.ok(large <= 4, "nearly every name shows on a large panel: " + large);
+    assert.ok(small > 40, "most names are hidden on a small panel: " + small);
+
+    hostBox.width = 470; hostBox.height = 530;
+    stubSvgBox();
+    window.dispatchEvent(new window.Event("resize"));
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  });
+
+  check("a hint replaces the names when the panel is too small for them", () => {
+    const hint = doc.getElementById("labelsHint");
+    hostBox.width = 926; hostBox.height = 373;
+    stubSvgBox();
+    window.dispatchEvent(new window.Event("resize"));
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(hint.hidden, false, "hint shown when no name can be read");
+
+    hostBox.width = 1000; hostBox.height = 720;
+    stubSvgBox();
+    window.dispatchEvent(new window.Event("resize"));
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(hint.hidden, true, "hint hidden when names are visible");
+  });
+
+  check("zooming in always brings the names back", () => {
+    hostBox.width = 375; hostBox.height = 268;
+    stubSvgBox();
+    window.dispatchEvent(new window.Event("resize"));
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const zoomIn = doc.getElementById("zoomIn");
+    for (let i = 0; i < 7; i++) zoomIn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const flagged = Array.from(doc.querySelectorAll("#map .map-labels .district-label"))
+      .filter(el => el.classList.contains("too-small")).length;
+    assert.strictEqual(flagged, 0, "zoomed in: every name fits: " + flagged);
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    hostBox.width = 470; hostBox.height = 530;
+    stubSvgBox();
+    window.dispatchEvent(new window.Event("resize"));
+  });
+
+  check("label anchors sit inside the district they name", () => {
+    const labels = doc.querySelectorAll("#map .map-labels .district-label");
+    assert.strictEqual(labels.length, 64);
+    let checked = 0;
+    labels.forEach(label => {
+      const x = Number(label.getAttribute("x"));
+      const y = Number(label.getAttribute("y"));
+      assert.ok(isFinite(x) && isFinite(y), "label has coordinates: " + label.getAttribute("x"));
+      const path = doc.querySelector(`#map path.map-path[data-id="${label.dataset.id}"]`).getAttribute("d");
+      const points = path.match(/[ML]([-\d.]+) ([-\d.]+)/g).map(part => part.slice(1).split(" ").map(Number));
+      const xs = points.map(point => point[0]);
+      const ys = points.map(point => point[1]);
+      const minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+      const minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+      assert.ok(x >= minX - 0.5 && x <= maxX + 0.5, `${label.dataset.id} label x ${x} outside ${minX}..${maxX}`);
+      assert.ok(y >= minY - 0.5 && y <= maxY + 0.5, `${label.dataset.id} label y ${y} outside ${minY}..${maxY}`);
+      checked++;
+    });
+    assert.strictEqual(checked, 64);
+  });
+
+  function pathGroupFirstChild(view) {
+    return Array.prototype.find.call(view.childNodes, node => node.nodeType === 1).getAttribute("class");
+  }
+
+  check("names scale with the map, so zooming in magnifies them", () => {
+    const label = doc.querySelector('.district-label[data-id="Dhaka"]');
+    const view = doc.querySelector("#map .map-view");
+    const group = () => Number(view.getAttribute("transform").match(/scale\(([\d.]+)\)/)[1]);
+
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(group(), 1);
+    assert.strictEqual(label.getAttribute("transform"), null, "labels carry no local transform");
+    assert.ok(Number(label.getAttribute("x")) > 0 && Number(label.getAttribute("y")) > 0, "absolute anchor");
+
+    doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.ok(group() > 2, "zoomed in: " + group());
+    // one shared transform means a district and its name can never drift apart
+    assert.strictEqual(label.parentNode.parentNode, view, "name is inside the transformed view");
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
   });
 
   check("zoom-to-district frames that district", () => {
     App.internals.zoomToShape("Rangamati");
-    const transform = doc.querySelector("#map .map-paths").getAttribute("transform");
+    const transform = doc.querySelector("#map .map-view").getAttribute("transform");
     assert.ok(App.internals.getZoom() > 2, "framed zoom: " + App.internals.getZoom());
     assert.ok(/translate\(-\d/.test(transform), "panned to the district: " + transform);
     App.internals.zoomToShape(null);
@@ -553,7 +654,7 @@ function report() {
   });
 
   check("at 100% the map cannot be dragged out of frame", () => {
-    const paths = doc.querySelector("#map .map-paths");
+    const paths = doc.querySelector("#map .map-view");
     const fire = (type, x, y) => paths.dispatchEvent(new window.MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 }));
     fire("pointerdown", 200, 200);
     fire("pointermove", 100, 120);
@@ -562,7 +663,7 @@ function report() {
   });
 
   check("dragging a zoomed map pans it and never selects a district", () => {
-    const paths = doc.querySelector("#map .map-paths");
+    const paths = doc.querySelector("#map .map-view");
     const before = { selected: App.internals.state.selected };
     const fire = (type, x, y) => paths.dispatchEvent(new window.MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 }));
 
@@ -592,14 +693,37 @@ function report() {
     assert.strictEqual(App.internals.getZoom(), 1);
   });
 
-  check("exports are un-zoomed and labels drop their counter-scale", () => {
+  check("a district and its name always transform together", () => {
+    const view = doc.querySelector("#map .map-view");
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const before = {
+      path: doc.querySelector('#map path.map-path[data-id="Dhaka"]').getAttribute("d"),
+      labelX: doc.querySelector('#map .district-label[data-id="Dhaka"]').getAttribute("x")
+    };
     doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-    const label = doc.querySelector('.district-label[data-id="Dhaka"]');
-    assert.ok(Number(label.getAttribute("transform").match(/scale\(([\d.]+)\)/)[1]) < 0.6, "zoomed screen state");
+    const zoomed = view.getAttribute("transform");
+    assert.match(zoomed, /scale\(2\.2[45]/, "shared view scale: " + zoomed);
+    const after = {
+      path: doc.querySelector('#map path.map-path[data-id="Dhaka"]').getAttribute("d"),
+      labelX: doc.querySelector('#map .district-label[data-id="Dhaka"]').getAttribute("x")
+    };
+    // geometry is untouched (the transform does the work) and both live in the same group
+    assert.strictEqual(after.path, before.path, "shape geometry unchanged");
+    assert.strictEqual(after.labelX, before.labelX, "label anchor unchanged");
+    assert.strictEqual(
+      doc.querySelector('#map path.map-path[data-id="Dhaka"]').parentNode.parentNode,
+      doc.querySelector('#map .district-label[data-id="Dhaka"]').parentNode.parentNode,
+      "shape and name share one transformed ancestor");
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  });
+
+  check("exports are always the un-zoomed map", () => {
+    doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     const exported = window.eval(`SVGMap.buildExportSVG({ title: "t", legend: [], background: "#131c2e" })`);
-    const scales = (exported.markup.match(/scale\(([\d.]+)\)/g) || []).map(value => Number(value.match(/[\d.]+/)[0]));
-    assert.ok(scales.every(value => value >= 0.999), "no counter-scale in export: " + scales.slice(0, 4).join(","));
+    assert.strictEqual((exported.markup.match(/scale\(/g) || []).length, 0, "no view transform in the export");
+    assert.ok(exported.markup.includes('x="'), "labels keep absolute anchors");
     assert.ok(!/data-bx/.test(exported.markup), "internal attributes stripped");
     assert.strictEqual(App.internals.getZoom() > 1, true, "screen keeps its zoom");
     doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));

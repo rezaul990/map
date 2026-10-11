@@ -15,6 +15,7 @@ const SVGMap = (() => {
   let container = null;
   let svg = null;
   let mapGroup = null;
+  let pathGroup = null;
   let labelGroup = null;
   let tooltip = null;
   let hooks = {};
@@ -61,11 +62,14 @@ const SVGMap = (() => {
     svg.style.height = "100%";
     svg.classList.add("bd-map");
     mapGroup = document.createElementNS(NS, "g");
-    mapGroup.setAttribute("class", "map-paths");
+    mapGroup.setAttribute("class", "map-view");
+    pathGroup = document.createElementNS(NS, "g");
+    pathGroup.setAttribute("class", "map-paths");
     labelGroup = document.createElementNS(NS, "g");
     labelGroup.setAttribute("class", "map-labels");
+    mapGroup.appendChild(pathGroup);
+    mapGroup.appendChild(labelGroup);
     svg.appendChild(mapGroup);
-    svg.appendChild(labelGroup);
 
     tooltip = document.createElement("div");
     tooltip.className = "map-tooltip";
@@ -80,6 +84,15 @@ const SVGMap = (() => {
     });
 
     attachInteraction();
+
+    // re-evaluate label legibility when the panel is resized (read-only observer:
+    // it never sizes anything, so it cannot feed back into layout)
+    if (typeof ResizeObserver !== "undefined" && svg) {
+      const observer = new ResizeObserver(() => {
+        hooks.onZoom(view.k, view.k > 1.001, applyLabelLegibility() === true);
+      });
+      observer.observe(svg);
+    }
   }
 
   /* ----------------------------------------------------------- zoom & pan */
@@ -231,16 +244,46 @@ const SVGMap = (() => {
   }
 
   function applyView() {
+    // One transform for the whole view: shapes and labels move together, and zooming
+    // in magnifies everything - including the district names, which is how they become
+    // readable on a small panel. Names that are still too small are hidden below.
     mapGroup.setAttribute("transform", `translate(${view.x.toFixed(2)} ${view.y.toFixed(2)}) scale(${view.k.toFixed(4)})`);
-    const inverse = view.k > 1 ? 1 / view.k : 1;
-    Array.prototype.forEach.call(labelGroup.children, label => {
-      const bx = Number(label.dataset.bx);
-      const by = Number(label.dataset.by);
-      if (isNaN(bx) || isNaN(by)) return;
-      label.setAttribute("transform", `translate(${bx} ${by}) scale(${inverse.toFixed(4)})`);
-    });
+
     svg.classList.toggle("zoomed", view.k > 1.001);
-    hooks.onZoom(view.k, view.k > 1.001);
+    const namesHidden = applyLabelLegibility() === true;
+    hooks.onZoom(view.k, view.k > 1.001, namesHidden);
+  }
+
+  /** Names rasterising below this many device pixels are hidden instead of drawn as mush. */
+  const MIN_READABLE_LABEL_PX = 6.5;
+
+  /**
+   * Hide district names that would be too small to read.
+   *
+   * The effective size is the label's size in viewBox units times how many device
+   * pixels one unit currently occupies (element fit x view scale). Zooming in,
+   * enlarging the panel or expanding to full screen brings the names back.
+   */
+  function applyLabelLegibility() {
+    if (!labelGroup) return;
+    const box = metrics();
+    if (!box.scale || box.scale < 0.05) return; // no usable measurement (headless, hidden panel)
+
+    const pixelsPerUnit = box.scale * view.k;
+    let visible = 0;
+    Array.prototype.forEach.call(labelGroup.children, label => {
+      const size = Number(label.dataset.size) || 10;
+      // districts that only just fit their name need a little more room than the rest
+      const threshold = label.dataset.tiny === "1"
+        ? MIN_READABLE_LABEL_PX + 2
+        : MIN_READABLE_LABEL_PX;
+      const tooSmall = size * pixelsPerUnit < threshold;
+      label.classList.toggle("too-small", tooSmall);
+      if (!tooSmall) visible++;
+    });
+    const allHidden = visible === 0;
+    labelGroup.classList.toggle("all-hidden", allHidden);
+    return allHidden;
   }
 
   function zoomIn(step) {
@@ -304,7 +347,7 @@ const SVGMap = (() => {
       ((bounds.maxLon - bounds.minLon) * Math.cos(midLat() * Math.PI / 180)));
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
-    mapGroup.innerHTML = "";
+    pathGroup.innerHTML = "";
     labelGroup.innerHTML = "";
 
     features.forEach(feature => {
@@ -354,7 +397,7 @@ const SVGMap = (() => {
         refresh();
       });
 
-      mapGroup.appendChild(path);
+      pathGroup.appendChild(path);
       items.push({ id, path, feature });
     });
 
@@ -374,10 +417,8 @@ const SVGMap = (() => {
       const size = labelSize(box, text);
       const centroid = projectionCenter(item.feature, box);
 
-      label.dataset.bx = centroid.x.toFixed(1);
-      label.dataset.by = centroid.y.toFixed(1);
-      label.setAttribute("x", "0");
-      label.setAttribute("y", "0");
+      label.setAttribute("x", centroid.x.toFixed(1));
+      label.setAttribute("y", centroid.y.toFixed(1));
       label.setAttribute("text-anchor", "middle");
       label.setAttribute("dominant-baseline", "central");
       label.setAttribute("class", "district-label");
@@ -470,10 +511,10 @@ const SVGMap = (() => {
     return plain ? `${label}, ${plain}` : label;
   }
 
-  /** Move a region to the end of the group so its outline is drawn on top. */
+  /** Move a region to the end of the path layer so its outline is drawn on top. */
   function raise(id) {
     const item = items.find(entry => entry.id === id);
-    if (item && item.path.nextSibling !== null) mapGroup.appendChild(item.path);
+    if (item && item.path !== pathGroup.lastChild) pathGroup.appendChild(item.path);
   }
 
   /* --------------------------------------------------------------- tooltip */
@@ -583,9 +624,9 @@ const SVGMap = (() => {
   function labelSize(box, text) {
     const chars = Math.max(3, text.length);
     const perChar = /[\u0980-\u09FF]/.test(text) ? 0.74 : 0.62;
-    const byHeight = Math.min(box.w, box.h) * 0.34;
+    const byHeight = Math.min(box.w, box.h) * 0.38;
     const byWidth = (box.w * 0.98) / (chars * perChar);
-    return Math.max(6, Math.min(14, byHeight, byWidth));
+    return Math.max(6, Math.min(17, byHeight, byWidth));
   }
 
   /** Centroid that always falls inside the shape (largest ring, then inner point). */
@@ -705,11 +746,12 @@ const SVGMap = (() => {
       copy.removeAttribute("role");
       copy.removeAttribute("class");
       if (copy.tagName.toLowerCase() === "text") {
-        // drop the on-screen zoom counter-scale: exports always show the full map
         if (copy.dataset && copy.dataset.bx !== undefined) {
-          copy.setAttribute("transform", `translate(${copy.dataset.bx} ${copy.dataset.by})`);
-          ["bx", "by", "size", "tiny", "id"].forEach(key => delete copy.dataset[key]);
+          // older markup kept anchors in data-*; normalise to plain coordinates
+          copy.setAttribute("x", copy.dataset.bx);
+          copy.setAttribute("y", copy.dataset.by);
         }
+        if (copy.dataset) ["bx", "by", "size", "tiny"].forEach(key => delete copy.dataset[key]);
         // labels keep their inline styles; fill in anything the stylesheet provided
         const computed = window.getComputedStyle(node);
         ["fill", "stroke", "stroke-width", "paint-order", "font-family", "font-size",

@@ -10,7 +10,7 @@
 <!-- Bengali/Latin fonts are self-hosted (vendor/fonts): no external font CDN, works offline -->
 <link rel="preload" as="font" type="font/woff2" href="vendor/fonts/hind-siliguri-400-bengali.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="vendor/fonts/hind-siliguri-600-bengali.woff2" crossorigin>
-<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/style.css?v=4">
 </head>
 <body>
 <div class="app">
@@ -109,6 +109,7 @@
           <span>জেলার নাম</span>
         </label>
         <button id="resetView" class="btn tiny" type="button" hidden>সব জেলা দেখান</button>
+        <span class="labels-hint" id="labelsHint" hidden>নাম দেখতে জুম করুন বা <kbd>F</kbd> চাপুন</span>
       </div>
       <button id="mapExpand" class="btn tiny map-expand" type="button" aria-pressed="false" aria-label="ম্যাপ বড় করুন" title="পুরো স্ক্রিনে দেখুন (F)">
         <svg class="icon-expand" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m8 0h3a2 2 0 0 0 2-2v-3"/></svg>
@@ -184,10 +185,10 @@ if (typeof XLSX === "undefined") {
   document.write('<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"><\/script>');
 }
 </script>
-<script src="js/plaza.js"></script>
-<script src="js/data.js"></script>
-<script src="js/parse.js"></script>
-<script src="js/map.js"></script>
-<script src="js/app.js"></script>
+<script src="js/plaza.js?v=4"></script>
+<script src="js/data.js?v=4"></script>
+<script src="js/parse.js?v=4"></script>
+<script src="js/map.js?v=4"></script>
+<script src="js/app.js?v=4"></script>
 </body>
 </html>

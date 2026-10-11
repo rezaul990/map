@@ -85,7 +85,7 @@ check("fonts are self-hosted and every referenced file exists", () => {
     .map(value => value.match(/url\('([^']+)'\)/)[1]);
   assert.ok(urls.length >= 6, "expected bengali + latin rules, found " + urls.length);
   urls.forEach(url => {
-    const file = path.join(ROOT, url.replace("../", ""));
+    const file = path.join(ROOT, url.replace("../", "").split("?")[0]);
     assert.ok(fs.existsSync(file), "missing font file: " + url);
     assert.ok(fs.statSync(file).size > 1000, "suspiciously small font file: " + url);
   });

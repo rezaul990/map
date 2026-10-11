@@ -47,8 +47,11 @@ alongside so growth can be judged against the district's overdue book.
 
 - The SVG fills its drawing area and letterboxes the map (`preserveAspectRatio="xMidYMid meet"`),
   so the browser always renders the country as large as the available space allows and it can
-  neither overflow the panel nor collapse to a thumbnail. On short windows the surrounding chrome
-  (KPI cards, hints, legend title) is trimmed so the map keeps its size.
+  neither overflow the panel nor collapse to a thumbnail.
+- On short windows the chrome around the map is trimmed, the KPI cards become one compact
+  scrolling strip, the legend floats over the empty left margin, and the map keeps the full panel
+  height. `/css` and `/js` assets carry a `?v=` query so a browser can never mix an old script with
+  a new stylesheet after a deploy.
 - Zoom: mouse wheel (zooms at the pointer), pinch on touch, `+` / `−` buttons, double-click, or the
   `+` / `−` / `0` keys. Range is 40%–1000%: below 100% the map shrinks and stays centred, above it
   it fills the frame with pan limits so there are never empty edges. The level is shown next to the
@@ -58,7 +61,11 @@ alongside so growth can be judged against the district's overdue book.
 - **পুরো স্ক্রিন** button (or `F`) expands the map to the whole viewport; `Esc` leaves it.
 - The drawer has **এই জেলায় জুম করুন** to frame the selected district (and the map auto-frames it when
   you open a district while already zoomed in).
-- District labels counter-scale while zooming, so names stay readable instead of becoming huge.
+- **Shapes and names share one transform**, so a district and its label can never drift apart
+  (they used to be in separate layers, which desynced them at other zoom levels).
+- Names scale with the map, and any name that would rasterise below ~6.5px is hidden instead of
+  drawn as mush — zooming in, expanding to full screen or a larger window brings them back.
+  When a panel is too small for any name, a hint suggests `F` (full screen).
 
 **Visualisation**
 - Aspect-correct projection (longitude × cos(latitude)), so Bangladesh is not stretched.

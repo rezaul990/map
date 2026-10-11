@@ -154,11 +154,14 @@ const App = (() => {
       getLabel: featureLabel,
       getTooltip: featureTooltip,
       onSelect: selectDistrict,
-      onZoom: (scale, zoomed) => {
+      onZoom: (scale, zoomed, namesHidden) => {
         const level = document.getElementById("zoomLevel");
         if (level) level.textContent = Math.round(scale * 100) + "%";
         const reset = document.getElementById("zoomReset");
         if (reset) reset.disabled = !zoomed;
+        // the panel is too small to label every district: say so instead of showing mush
+        const hint = document.getElementById("labelsHint");
+        if (hint) hint.hidden = !(namesHidden && state.ready);
       }
     });
   }
@@ -1315,7 +1318,7 @@ const App = (() => {
         const inlined = await Promise.all(wanted.map(async block => {
           const url = block.match(/url\('([^']+)'\)/);
           if (!url) return "";
-          const path = url[1].replace(/^\.\.\//, "");
+          const path = url[1].replace(/^\.\.\//, "").split("?")[0];
           const response = await fetch(path);
           const buffer = await response.arrayBuffer();
           const base64 = base64FromBuffer(buffer);
