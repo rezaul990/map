@@ -54,8 +54,10 @@ alongside so growth can be judged against the district's overdue book.
   `style.css` cannot collapse the box and drop the map to the default 300×150 svg size.
   `tests/css.test.js` keeps the inline copy and `css/style.css` in agreement.
 - On short windows the chrome around the map is trimmed, the KPI cards become one compact
-  scrolling strip, the legend floats over the empty left margin, and the map keeps the full panel
-  height. `/css` and `/js` assets carry a `?v=` query so a browser can never mix an old script with
+  scrolling strip and the map keeps the full panel height. Where the panel is also wide (1000px+)
+  the colour key floats in the empty margin beside the centred country instead of costing map
+  height; on narrower panels it stays in flow under the map, because a floating key would sit on
+  top of the country. `/css` and `/js` assets carry a `?v=` query so a browser can never mix an old script with
   a new stylesheet after a deploy.
 - Zoom: `Ctrl`/`⌘` + mouse wheel (zooms at the pointer), pinch on touch, `+` / `−` buttons,
   double-click, or the `+` / `−` / `0` keys. A plain wheel scrolls the page instead of zooming, so

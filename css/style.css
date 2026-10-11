@@ -11,7 +11,7 @@
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url('../vendor/fonts/hind-siliguri-400-bengali.woff2?v=6') format('woff2');
+  src: url('../vendor/fonts/hind-siliguri-400-bengali.woff2?v=7') format('woff2');
   unicode-range: U+0951-0952,U+0964-0965,U+0980-09FE,U+1CD0,U+1CD2,U+1CD5-1CD6,U+1CD8,U+1CE1,U+1CEA,U+1CED,U+1CF2,U+1CF5-1CF7,U+200C-200D,U+20B9,U+25CC,U+A8F1;
 }
 @font-face {
@@ -19,7 +19,7 @@
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url('../vendor/fonts/hind-siliguri-400-latin.woff2?v=6') format('woff2');
+  src: url('../vendor/fonts/hind-siliguri-400-latin.woff2?v=7') format('woff2');
   unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
 }
 @font-face {
@@ -27,7 +27,7 @@
   font-style: normal;
   font-weight: 600;
   font-display: swap;
-  src: url('../vendor/fonts/hind-siliguri-600-bengali.woff2?v=6') format('woff2');
+  src: url('../vendor/fonts/hind-siliguri-600-bengali.woff2?v=7') format('woff2');
   unicode-range: U+0951-0952,U+0964-0965,U+0980-09FE,U+1CD0,U+1CD2,U+1CD5-1CD6,U+1CD8,U+1CE1,U+1CEA,U+1CED,U+1CF2,U+1CF5-1CF7,U+200C-200D,U+20B9,U+25CC,U+A8F1;
 }
 @font-face {
@@ -35,7 +35,7 @@
   font-style: normal;
   font-weight: 600;
   font-display: swap;
-  src: url('../vendor/fonts/hind-siliguri-600-latin.woff2?v=6') format('woff2');
+  src: url('../vendor/fonts/hind-siliguri-600-latin.woff2?v=7') format('woff2');
   unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
 }
 @font-face {
@@ -43,7 +43,7 @@
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url('../vendor/fonts/hind-siliguri-700-bengali.woff2?v=6') format('woff2');
+  src: url('../vendor/fonts/hind-siliguri-700-bengali.woff2?v=7') format('woff2');
   unicode-range: U+0951-0952,U+0964-0965,U+0980-09FE,U+1CD0,U+1CD2,U+1CD5-1CD6,U+1CD8,U+1CE1,U+1CEA,U+1CED,U+1CF2,U+1CF5-1CF7,U+200C-200D,U+20B9,U+25CC,U+A8F1;
 }
 @font-face {
@@ -51,7 +51,7 @@
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url('../vendor/fonts/hind-siliguri-700-latin.woff2?v=6') format('woff2');
+  src: url('../vendor/fonts/hind-siliguri-700-latin.woff2?v=7') format('woff2');
   unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
 }
 
@@ -1118,16 +1118,24 @@ body.map-expanded-open { overflow: hidden; }
   .metric-hint { display: none; }
   .toolbar-row { margin-bottom: 10px; }
   .map-container { min-height: 340px; }
-  /* the map gets the full panel height; the colour key floats in the empty
-     left margin, where the map never reaches (the country is centred) */
   .map-svg { top: 36px; bottom: 6px; }
+  .map-legend { padding: 8px 10px; }
+  .legend-item { font-size: 0.74rem; }
+  .footer { display: none; }
+}
+
+/* Wide-but-short windows: the panel is much wider than the centred country needs,
+   so the colour key floats in the empty left margin instead of costing map height.
+   Only where that margin is genuinely wide enough — at 44% the key used to sit on
+   top of the western districts. */
+@media (max-height: 720px) and (min-width: 1000px) {
   .map-legend {
     position: absolute;
     top: 50px;
     left: 12px;
     z-index: 7;
     width: max-content;
-    max-width: 44%;
+    max-width: 24%;
     padding: 8px 12px;
     background: color-mix(in srgb, var(--bg-elevated) 86%, transparent);
     backdrop-filter: blur(10px);
@@ -1139,8 +1147,6 @@ body.map-expanded-open { overflow: hidden; }
   .map-legend .legend { flex-direction: column; gap: 4px; }
   .map-legend .legend-item { font-size: 0.72rem; }
   .legend-title { display: none; }
-  .legend-item { font-size: 0.74rem; }
-  .footer { display: none; }
 }
 
 .labels-hint {
