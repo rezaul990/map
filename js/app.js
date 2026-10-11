@@ -54,16 +54,18 @@ const App = (() => {
     advance: "Collection Advance"
   };
 
-  /** Absolute bands, matching the report's own 70/80/90 thresholds. */
+  /** Absolute bands for the "fixed" scale: 60/70/80% for percents, Tk thresholds for overdue. */
   const FIXED_PERCENT_BANDS = [
-    { color: "#dc2626", label: "0 – 69.99%", min: -Infinity, max: 70, tone: "bad" },
-    { color: "#facc15", label: "70 – 79.99%", min: 70, max: 80, tone: "warn" },
-    { color: "#86efac", label: "80 – 89.99%", min: 80, max: 90, tone: "ok" },
-    { color: "#16a34a", label: "90 – 100%", min: 90, max: Infinity, tone: "good" }
+    { color: "#dc2626", label: "0 – 59.99%", min: -Infinity, max: 60, tone: "bad" },
+    { color: "#facc15", label: "60 – 69.99%", min: 60, max: 70, tone: "warn" },
+    { color: "#86efac", label: "70 – 79.99%", min: 70, max: 80, tone: "ok" },
+    { color: "#16a34a", label: "80 – 100%", min: 80, max: Infinity, tone: "good" }
   ];
   const FIXED_OVERDUE_BANDS = [
-    { color: "#16a34a", label: "0 বা তার কম (ওভারডিউ কমেছে)", min: -Infinity, max: 0.0000001, tone: "good" },
-    { color: "#dc2626", label: "0 এর বেশি (ওভারডিউ বেড়েছে)", min: 0.0000001, max: Infinity, tone: "bad" }
+    { color: "#16a34a", label: "1 এর কম (ওভারডিউ কমেছে)", min: -Infinity, max: 1, tone: "good" },
+    { color: "#FFFF00", label: "1 – 14,99,999", min: 1, max: 1500000, tone: "ok" },
+    { color: "#facc15", label: "15,00,000 – 39,99,999", min: 1500000, max: 4000000, tone: "warn" },
+    { color: "#dc2626", label: "40,00,000+", min: 4000000, max: Infinity, tone: "bad" }
   ];
 
   const NO_DATA_COLOR = "#64748b";
@@ -196,7 +198,7 @@ const App = (() => {
       state.scale = event.target.value === "fixed" ? "fixed" : "relative";
       savePrefs({ scale: state.scale });
       renderAll();
-      showToast(state.scale === "fixed" ? "নির্দিষ্ট থ্রেশহোল্ড (৭০/৮০/৯০%) দেখানো হচ্ছে" : "তুলনামূলক স্কেল দেখানো হচ্ছে");
+      showToast(state.scale === "fixed" ? "নির্দিষ্ট থ্রেশহোল্ড (৬০/৭০/৮০%) দেখানো হচ্ছে" : "তুলনামূলক স্কেল দেখানো হচ্ছে");
     });
 
     document.querySelectorAll(".metric-tab").forEach(tab => {
@@ -577,9 +579,9 @@ const App = (() => {
   /**
    * Colour bands for the active metric.
    *
-   * "fixed"    -> the report's own thresholds (70/80/90%).
+   * "fixed"    -> absolute thresholds (60/70/80% for percents, Tk bands for overdue).
    * "relative" -> quartiles of the districts present in the data, so reports whose
-   *               collection rates sit far below 70% (e.g. 5–30%) still produce a
+   *               collection rates sit far below 60% (e.g. 5–30%) still produce a
    *               readable map instead of a solid red country. Overdue is judged
    *               against each district's own overdue book.
    */
@@ -906,7 +908,7 @@ const App = (() => {
       sub: metricConfig().label,
       tone: national === null ? "" : (state.metric === "overdueChange"
         ? (national <= 0 ? "good" : "bad")
-        : (national >= 90 ? "good" : national < 80 ? "bad" : "warn"))
+        : (national >= 80 ? "good" : national < 60 ? "bad" : "warn"))
     });
 
     const ranked = rankedDistricts();

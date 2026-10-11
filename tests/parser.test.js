@@ -185,7 +185,7 @@ ok('real report: metric columns expose the exact report triplets', () => {
 });
 
 ok('real report: low percentages still spread across the legend bands', () => {
-  // the sample values are 5.42% - 24.44%, so fixed 70/80/90 thresholds would paint everything red
+  // the sample values are 5.42% - 24.44%, so fixed 60/70/80 thresholds would paint everything red
   const out = P.parseRows(reportRows(), D.bdResolveDistrict);
   assert.ok(out.entries.every(e => e.data.amtPct !== null && e.data.amtPct < 30));
   const values = out.entries.map(e => e.data.amtPct).sort((a, b) => a - b);

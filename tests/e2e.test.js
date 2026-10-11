@@ -259,8 +259,17 @@ function report() {
     scale.value = "fixed";
     scale.dispatchEvent(new window.Event("change", { bubbles: true }));
     const labels = Array.from(doc.querySelectorAll("#legend .legend-label")).map(el => el.textContent);
+    assert.ok(labels.some(text => text.includes("60 – 69.99%")), "fixed labels: " + labels.join(" | "));
     assert.ok(labels.some(text => text.includes("70 – 79.99%")), "fixed labels: " + labels.join(" | "));
+    assert.ok(labels.some(text => text.includes("80 – 100%")), "fixed labels: " + labels.join(" | "));
     assert.strictEqual(legendCounts().reduce((a, b) => a + b, 0), 64);
+    // fixed overdue scale: 4 Tk bands + "no data"
+    doc.querySelector('.metric-tab[data-metric="overdueChange"]').dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const overdueLabels = Array.from(doc.querySelectorAll("#legend .legend-label")).map(el => el.textContent);
+    assert.ok(overdueLabels.some(text => text.includes("40,00,000+")), "fixed overdue labels: " + overdueLabels.join(" | "));
+    assert.ok(overdueLabels.some(text => text.includes("15,00,000")), "fixed overdue labels: " + overdueLabels.join(" | "));
+    assert.strictEqual(doc.querySelectorAll("#legend .legend-item").length, 5);
+    doc.querySelector('.metric-tab[data-metric="collectedQty"]').dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     scale.value = "relative";
     scale.dispatchEvent(new window.Event("change", { bubbles: true }));
     const adaptive = Array.from(doc.querySelectorAll("#legend .legend-label")).map(el => el.textContent);

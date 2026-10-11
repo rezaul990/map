@@ -40,8 +40,11 @@ alongside so growth can be judged against the district's overdue book.
 - **তুলনামূলক (default)** – quartiles of the districts present in the data, so reports whose
   collection rates sit far below 70% (e.g. 5–35%) still produce a readable map instead of a
   solid red country. Overdue is split into "least / medium / most growth" for the same reason.
-- **নির্দিষ্ট** – the report's own thresholds (70 / 80 / 90%) for a like-for-like view across
-  months and regions.
+- **নির্দিষ্ট** – fixed thresholds: 60 / 70 / 80% for the collection percentages
+  (0–59.99% red `#dc2626`, 60–69.99% yellow `#facc15`, 70–79.99% light green `#86efac`,
+  80–100% dark green `#16a34a`); overdue uses 1 / 15,00,000 / 40,00,000 Tk bands
+  (<1 green `#16a34a`, 1–14,99,999 bright yellow `#FFFF00`, 15,00,000–39,99,999 yellow
+  `#facc15`, 40,00,000+ red `#dc2626`).
 
 **Navigation**
 
