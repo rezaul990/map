@@ -1,350 +1,1094 @@
+/**
+ * Application shell: UI state, rendering and user interactions.
+ */
 const App = (() => {
-  let bdData = null;
-  let currentMetric = "collectedQty";
-  let districtFilter = "all";
-  let plazaData = null;
-  let districtStats = {};
-  const STORAGE_KEY = "plaza-map-state";
+  const GEO_URL = "data/bangladesh.geojson";
+  const STORAGE_KEY = "plaza-map-dataset-v2";
+  const PREF_KEY = "plaza-map-prefs-v2";
+  const MAX_FILE_MB = 25;
 
-  const METRIC_COLUMNS = {
-    collectedQty: "Collectable Vs. Collected Acc Qty (%)",
-    collectableAmt: "Collectable Vs. Collected Amt (%)",
-    overdueChange: "Overdue Increase/(Decrease)"
+  const METRICS = {
+    collectedQty: {
+      label: "Collected Acc Qty (%)",
+      statKey: "avgQtyPct",
+      kind: "percent",
+      hint: "প্রতিটি প্লাজার “Collectable Vs. Collected Acc Qty (%)” এর জেলা-ভিত্তিক গড়"
+    },
+    collectableAmt: {
+      label: "Collectable Vs. Collected Amt (%)",
+      statKey: "avgAmtPct",
+      kind: "percent",
+      hint: "প্রতিটি প্লাজার “Collectable Vs. Collected Amt. (%)” এর জেলা-ভিত্তিক গড়"
+    },
+    overdueChange: {
+      label: "Overdue Increase/(Decrease)",
+      statKey: "sumOverdueChange",
+      kind: "amount",
+      hint: "জেলার সব প্লাজার Overdue Increase/(Decrease) এর যোগফল — ঋণাত্মক মান মানে ওভারডিউ কমেছে"
+    }
   };
 
+  const PERCENT_BANDS = [
+    { color: "#dc2626", label: "0 – 69.99%", min: -Infinity, max: 70, tone: "bad" },
+    { color: "#facc15", label: "70 – 79.99%", min: 70, max: 80, tone: "warn" },
+    { color: "#86efac", label: "80 – 89.99%", min: 80, max: 90, tone: "ok" },
+    { color: "#16a34a", label: "90 – 100%", min: 90, max: Infinity, tone: "good" }
+  ];
+  const NO_DATA_COLOR = "#64748b";
+
+  const OVERDUE_BANDS = [
+    { color: "#16a34a", label: "0 বা তার কম (ওভারডিউ কমেছে)", min: -Infinity, max: 0.0000001 },
+    { color: "#dc2626", label: "0 এর বেশি (ওভারডিউ বেড়েছে)", min: 0.0000001, max: Infinity }
+  ];
+
+  const nf = new Intl.NumberFormat("en-IN");
+
+  const state = {
+    geo: null,
+    entries: [],
+    stats: {},
+    plazaIndex: new Map(),
+    metric: "collectedQty",
+    districtFilter: "all",
+    search: "",
+    sort: "name-asc",
+    selected: null,
+    showLabels: true,
+    fileName: "",
+    savedAt: null,
+    percentScale: 1,
+    unmatched: [],
+    skipped: 0,
+    columns: null,
+    ready: false,
+    geoError: null
+  };
+
+  /* ------------------------------------------------------------------ init */
+
   async function init() {
-    await loadBDData();
+    applyTheme(loadPrefs().theme || "dark");
+    bindStaticEvents();
+    initMap();
+
+    try {
+      const res = await fetch(GEO_URL, { cache: "force-cache" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      state.geo = await res.json();
+      if (!state.geo || !Array.isArray(state.geo.features) || !state.geo.features.length) {
+        throw new Error("জিওডেটা খালি");
+      }
+    } catch (err) {
+      state.geoError = err;
+      showMapNotice(
+        "ম্যাপ ডেটা লোড করা যায়নি",
+        "ফাইলটি সরাসরি খোলা হলে (file://) ব্রাউজার ডেটা পড়তে দেয় না। ফোল্ডারটি একটি লোকাল সার্ভারে চালান — " +
+        "<code>python -m http.server 8080</code> — তারপর <code>http://localhost:8080</code> খুলুন।"
+      );
+      renderKpis();
+      renderLegend();
+      renderList();
+      return;
+    }
+
+    SVGMap.setData(state.geo.features);
+    document.getElementById("mapEmpty").hidden = false;
     populateDistrictFilter();
-    initMetricTabs();
-    initEventListeners();
-    updateLegend();
+    renderKpis();
+    renderLegend();
+
+    const restored = loadDataset();
+    if (restored) {
+      loadEntries(restored.entries, {
+        fileName: restored.fileName,
+        savedAt: restored.savedAt,
+        percentScale: restored.percentScale,
+        skipped: restored.skipped,
+        columns: restored.columns,
+        restored: true
+      });
+    } else {
+      renderList();
+    }
   }
 
-  async function loadBDData() {
-    const res = await fetch("data/bangladesh.geojson");
-    bdData = await res.json();
+  function initMap() {
+    SVGMap.init({
+      container: document.getElementById("mapSvg"),
+      accent: themeColors().accent,
+      getStyle: styleForFeature,
+      getLabel: featureLabel,
+      getTooltip: featureTooltip,
+      onSelect: selectDistrict
+    });
+  }
+
+  function bindStaticEvents() {
+    document.getElementById("dataFile").addEventListener("change", handleFileUpload);
+    document.getElementById("districtFilter").addEventListener("change", event => {
+      state.districtFilter = event.target.value;
+      renderMapSelection();
+      renderList();
+    });
+
+    const search = document.getElementById("searchInput");
+    search.addEventListener("input", event => {
+      state.search = event.target.value.trim();
+      renderList();
+    });
+
+    document.getElementById("sortSelect").addEventListener("change", event => {
+      state.sort = event.target.value;
+      renderList();
+    });
+
+    document.querySelectorAll(".metric-tab").forEach(tab => {
+      tab.addEventListener("click", () => setMetric(tab.dataset.metric));
+    });
+
+    document.getElementById("labelToggle").addEventListener("change", event => {
+      state.showLabels = event.target.checked;
+      SVGMap.setLabelsVisible(state.showLabels);
+      savePrefs({ showLabels: state.showLabels });
+    });
+
+    document.getElementById("themeToggle").addEventListener("click", () => {
+      const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+      applyTheme(next);
+      savePrefs({ theme: next });
+    });
+
+    document.getElementById("resetView").addEventListener("click", () => {
+      state.districtFilter = "all";
+      document.getElementById("districtFilter").value = "all";
+      clearSelection();
+      renderMapSelection();
+      renderList();
+    });
+
+    document.getElementById("clearBtn").addEventListener("click", clearDataset);
+    document.getElementById("demoBtn").addEventListener("click", loadDemoData);
+
+    // export menu
+    const exportBtn = document.getElementById("exportBtn");
+    const exportMenu = document.getElementById("exportMenu");
+    exportBtn.addEventListener("click", event => {
+      event.stopPropagation();
+      const open = exportMenu.hasAttribute("hidden");
+      if (open) exportMenu.removeAttribute("hidden"); else exportMenu.setAttribute("hidden", "");
+      exportBtn.setAttribute("aria-expanded", String(open));
+    });
+    document.addEventListener("click", () => {
+      exportMenu.setAttribute("hidden", "");
+      exportBtn.setAttribute("aria-expanded", "false");
+    });
+    exportMenu.addEventListener("click", event => {
+      const target = event.target.closest("[data-export]");
+      if (!target) return;
+      exportMenu.setAttribute("hidden", "");
+      runExport(target.dataset.export);
+    });
+
+    // drawer
+    document.getElementById("drawerClose").addEventListener("click", clearSelection);
+    document.getElementById("drawerBackdrop").addEventListener("click", clearSelection);
+    document.getElementById("drawerFilterBtn").addEventListener("click", () => {
+      if (!state.selected) return;
+      state.districtFilter = state.selected;
+      document.getElementById("districtFilter").value = state.selected;
+      renderMapSelection();
+      renderList();
+      closeDrawer();
+      showToast(`${featureLabel({ properties: { shapeName: state.selected } })} জেলা ফিল্টার করা হয়েছে`);
+    });
+
+    document.addEventListener("keydown", event => {
+      const tag = (event.target.tagName || "").toLowerCase();
+      if (event.key === "Escape") {
+        clearSelection();
+        return;
+      }
+      if (event.key === "/" && tag !== "input" && tag !== "select" && tag !== "textarea") {
+        event.preventDefault();
+        search.focus();
+      }
+    });
+  }
+
+  /* --------------------------------------------------------------- theming */
+
+  function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme === "light" ? "light" : "dark";
+    const toggle = document.getElementById("themeToggle");
+    if (toggle) toggle.setAttribute("aria-label", theme === "light" ? "ডার্ক থিম" : "লাইট থিম");
+  }
+
+  function themeColors() {
+    const css = getComputedStyle(document.documentElement);
+    const read = (name, fallback) => (css.getPropertyValue(name) || "").trim() || fallback;
+    return {
+      background: read("--bg-elevated", "#1e293b"),
+      text: read("--text", "#f1f5f9"),
+      muted: read("--text-muted", "#94a3b8"),
+      accent: read("--accent", "#38bdf8")
+    };
+  }
+
+  /* ----------------------------------------------------------- data loading */
+
+  async function handleFileUpload(event) {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = "";
+    if (!file) return;
+
+    if (file.size > MAX_FILE_MB * 1024 * 1024) {
+      setStatus(`ফাইলটি অনেক বড় (${(file.size / 1048576).toFixed(1)} MB) — সর্বোচ্চ ${MAX_FILE_MB} MB`, "error");
+      showToast("ফাইল সাইজ বেশি", "error");
+      return;
+    }
+    if (typeof XLSX === "undefined") {
+      setStatus("Excel লাইব্রেরি লোড হয়নি — ইন্টারনেট সংযোগ দেখুন", "error");
+      return;
+    }
+
+    setStatus(`“${file.name}” পড়া হচ্ছে...`, "loading");
+    document.body.classList.add("busy");
+    try {
+      await ingestBuffer(await file.arrayBuffer(), file.name);
+    } catch (err) {
+      console.error(err);
+      setStatus(err.message || "ফাইল পড়তে সমস্যা হয়েছে", "error");
+      showToast("ফাইল পড়া যায়নি — ফরম্যাট দেখুন", "error");
+    } finally {
+      document.body.classList.remove("busy");
+    }
+  }
+
+  /** Workbook buffer -> parsed entries -> UI. Shared by uploads and tests. */
+  async function ingestBuffer(buffer, fileName) {
+    if (typeof XLSX === "undefined") throw new Error("Excel লাইব্রেরি লোড হয়নি — ইন্টারনেট সংযোগ দেখুন");
+    const workbook = XLSX.read(buffer, { type: "array", cellDates: false });
+    const parsed = parseWorkbook(workbook);
+    loadEntries(parsed.entries, {
+      fileName: fileName || "",
+      percentScale: parsed.percentScale,
+      skipped: parsed.skipped,
+      columns: parsed.columns,
+      sheet: parsed.sheet
+    });
+    showToast(`${parsed.entries.length} প্লাজার ডেটা লোড হয়েছে`);
+    return parsed;
+  }
+
+  /** Try every sheet until one yields usable rows. */
+  function parseWorkbook(workbook) {
+    const errors = [];
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) continue;
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+      if (!rows.length) continue;
+      try {
+        const parsed = PlazaParser.parseRows(rows, bdResolveDistrict);
+        parsed.sheet = sheetName;
+        return parsed;
+      } catch (err) {
+        errors.push(err.message);
+      }
+    }
+    throw new Error(errors[0] || "কোনো শীটে ব্যবহারযোগ্য ডেটা পাওয়া যায়নি");
+  }
+
+  /** Compute stats, refresh the whole UI and persist. */
+  function loadEntries(entries, meta) {
+    state.entries = entries;
+    state.fileName = meta.fileName || "";
+    state.savedAt = meta.restored ? meta.savedAt : new Date().toISOString();
+    state.percentScale = meta.percentScale || 1;
+    state.skipped = meta.skipped || 0;
+    state.columns = meta.columns || null;
+
+    const plazaIndex = PlazaParser.buildPlazaIndex(mappingData(), bdResolveDistrict);
+    state.plazaIndex = plazaIndex;
+    const { stats, unmatched } = PlazaParser.buildStats(entries, plazaIndex);
+    state.stats = stats;
+    state.unmatched = unmatched;
+    state.ready = entries.length > 0;
+
+    if (!meta.restored) persistDataset();
+    document.getElementById("mapEmpty").hidden = true;
+    document.getElementById("resetView").hidden = true;
+    document.getElementById("exportBtn").disabled = false;
+    document.getElementById("clearBtn").disabled = false;
+
+    if (state.selected && !state.stats[state.selected]) clearSelection();
+    renderAll();
+    updateStatusLine(meta);
+  }
+
+  function updateStatusLine(meta) {
+    const covered = Object.keys(state.stats).length;
+    const total = state.geo ? state.geo.features.length : 0;
+    const parts = [
+      `${nf.format(state.entries.length)} প্লাজা`,
+      `${covered}/${total} জেলা`
+    ];
+    if (state.fileName) parts.push(state.fileName);
+    if (meta && meta.restored) parts.push("সেভ করা ডেটা থেকে লোড হয়েছে");
+    setStatus(parts.join(" • "), "success");
+
+    const notes = [];
+    if (state.percentScale === 100) notes.push("শতকরা মান ফ্র্যাকশন থেকে % এ রূপান্তর করা হয়েছে");
+    if (state.unmatched.length) {
+      notes.push(`${state.unmatched.length}টি প্লাজার জেলা শনাক্ত হয়নি (যেমন: ${state.unmatched.slice(0, 3).join(", ")})`);
+    }
+    const noteEl = document.getElementById("dataNotes");
+    noteEl.innerHTML = notes.length
+      ? notes.map(note => `<div class="note">⚠ ${escapeHtml(note)}</div>`).join("")
+      : "";
+  }
+
+  function clearDataset() {
+    if (state.ready && !window.confirm("আপলোড করা ডেটা মুছে ফেলা হবে — আপনি নিশ্চিত?")) return;
+    state.entries = [];
+    state.stats = {};
+    state.unmatched = [];
+    state.ready = false;
+    state.fileName = "";
+    state.savedAt = null;
+    state.columns = null;
+    localStorage.removeItem(STORAGE_KEY);
+    clearSelection();
+    document.getElementById("exportBtn").disabled = true;
+    document.getElementById("clearBtn").disabled = true;
+    document.getElementById("mapEmpty").hidden = false;
+    document.getElementById("resetView").hidden = true;
+    document.getElementById("dataNotes").innerHTML = "";
+    setStatus("ডেটা মুছে ফেলা হয়েছে — নতুন Excel ফাইল আপলোড করুন", "");
+    renderAll();
+    showToast("ডেটা মুছে ফেলা হয়েছে");
+  }
+
+  /** Deterministic sample dataset so the app can be explored without a report file. */
+  function loadDemoData() {
+    const mapping = mappingData();
+    if (!mapping.length) return;
+    const entries = mapping.map((row, i) => {
+      const seed = hashString(row.plaza + i);
+      const qtyPct = round1(55 + (seed % 450) / 10);
+      const amtPct = round1(Math.max(35, Math.min(100, qtyPct + ((seed >> 3) % 90) / 10 - 4.5)));
+      const overdueChange = Math.round(((seed >> 5) % 4000) - 1800);
+      const collectableAmt = 250000 + (seed % 900) * 1000;
+      return {
+        plaza: row.plaza,
+        districtFromFile: null,
+        area: row.area || "",
+        division: row.division || "",
+        data: {
+          collectableQty: 500 + (seed % 900),
+          collectedQty: Math.round((500 + (seed % 900)) * qtyPct / 100),
+          qtyPct,
+          collectableAmt,
+          collectedAmt: Math.round(collectableAmt * amtPct / 100),
+          advance: 0,
+          totalCollection: Math.round(collectableAmt * amtPct / 100),
+          prevOverdue: 10000 + (seed % 50000),
+          runningOverdue: 10000 + (seed % 50000) + overdueChange,
+          overdueChange
+        }
+      };
+    });
+    loadEntries(entries, { fileName: "ডেমো ডেটা (নমুনা)", percentScale: 1, skipped: 0, columns: null });
+    showToast("ডেমো ডেটা দেখানো হচ্ছে — আসল রিপোর্ট আপলোড করলে এটি প্রতিস্থাপিত হবে");
+  }
+
+  function hashString(str) {
+    let hash = 2166136261;
+    for (let i = 0; i < str.length; i++) {
+      hash ^= str.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return Math.abs(hash);
+  }
+
+  function mappingData() {
+    return typeof PLAZA_DISTRICT !== "undefined" && Array.isArray(PLAZA_DISTRICT) ? PLAZA_DISTRICT : [];
+  }
+
+  /* ------------------------------------------------------------ persistence */
+
+  function persistDataset() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        version: 2,
+        savedAt: state.savedAt,
+        fileName: state.fileName,
+        percentScale: state.percentScale,
+        skipped: state.skipped,
+        columns: state.columns,
+        entries: state.entries.map(entry => ({
+          plaza: entry.plaza,
+          districtFromFile: entry.districtFromFile || null,
+          area: entry.area || "",
+          division: entry.division || "",
+          data: entry.data
+        }))
+      }));
+    } catch (err) {
+      console.warn("ডেটা সেভ করা যায়নি", err);
+    }
+  }
+
+  function loadDataset() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !Array.isArray(parsed.entries) || !parsed.entries.length) return null;
+      return parsed;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function loadPrefs() {
+    try { return JSON.parse(localStorage.getItem(PREF_KEY)) || {}; } catch (err) { return {}; }
+  }
+
+  function savePrefs(patch) {
+    try {
+      localStorage.setItem(PREF_KEY, JSON.stringify(Object.assign({}, loadPrefs(), patch)));
+    } catch (err) { /* ignore */ }
+  }
+
+  /* --------------------------------------------------------------- metrics */
+
+  function metricConfig() {
+    return METRICS[state.metric] || METRICS.collectedQty;
+  }
+
+  function metricValue(shape) {
+    return PlazaParser.metricValue(state.stats[shape], state.metric);
+  }
+
+  function metricAvailable() {
+    if (!state.ready) return true;
+    return state.entries.some(entry => {
+      const key = state.metric === "overdueChange" ? "overdueChange"
+        : state.metric === "collectableAmt" ? "amtPct" : "qtyPct";
+      return entry.data[key] !== null && entry.data[key] !== undefined;
+    });
+  }
+
+  function bands() {
+    return state.metric === "overdueChange" ? OVERDUE_BANDS : PERCENT_BANDS;
+  }
+
+  function colorFor(value) {
+    if (value === null || value === undefined) return NO_DATA_COLOR;
+    if (state.metric === "overdueChange") {
+      return value <= 0 ? OVERDUE_BANDS[0].color : OVERDUE_BANDS[1].color;
+    }
+    const band = PERCENT_BANDS.find(b => value >= b.min && value < b.max);
+    return band ? band.color : NO_DATA_COLOR;
+  }
+
+  function setMetric(metric) {
+    if (!METRICS[metric] || metric === state.metric) return;
+    state.metric = metric;
+    savePrefs({ metric });
+    document.querySelectorAll(".metric-tab").forEach(tab => {
+      tab.classList.toggle("active", tab.dataset.metric === metric);
+      tab.setAttribute("aria-selected", String(tab.dataset.metric === metric));
+    });
+    renderKpis();
+    renderLegend();
+    renderMapSelection();
+    renderList();
+    if (state.selected) renderDrawer();
+  }
+
+  /* ------------------------------------------------------------ formatting */
+
+  function formatPercent(value) {
+    if (value === null || value === undefined || isNaN(value)) return "—";
+    return value.toFixed(1) + "%";
+  }
+
+  function formatAmount(value) {
+    if (value === null || value === undefined || isNaN(value)) return "—";
+    const rounded = Math.round(value);
+    return (rounded > 0 && state.metric === "overdueChange" ? "+" : "") + nf.format(rounded);
+  }
+
+  function formatValue(value) {
+    return metricConfig().kind === "percent" ? formatPercent(value) : formatAmount(value);
+  }
+
+  function round1(n) { return Math.round(n * 10) / 10; }
+
+  /** Compact value used inside the map/KPI cards. */
+  function formatCompact(value) {
+    if (value === null || value === undefined || isNaN(value)) return "—";
+    const abs = Math.abs(value);
+    if (metricConfig().kind === "amount" && abs >= 1e6) {
+      const sign = value < 0 ? "-" : "";
+      if (abs >= 1e7) return sign + (abs / 1e7).toFixed(2).replace(/\.00$/, "") + " Cr";
+      return sign + (abs / 1e5).toFixed(1).replace(/\.0$/, "") + " L";
+    }
+    return formatValue(value);
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, ch => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[ch]));
+  }
+
+  /* ------------------------------------------------------------ map hooks */
+
+  function styleForFeature(feature) {
+    const value = metricValue(feature.properties.shapeName);
+    return {
+      fill: colorFor(value),
+      stroke: "#ffffff",
+      strokeOpacity: 0.55,
+      strokeWidth: 1,
+      fillOpacity: value === null ? 0.45 : 0.92
+    };
+  }
+
+  function featureLabel(feature) {
+    const shape = feature.properties.shapeName;
+    return bdDistrictInfo(shape).bn || shape;
+  }
+
+  function featureTooltip(feature) {
+    const shape = feature.properties.shapeName;
+    const stat = state.stats[shape];
+    const info = bdDistrictInfo(shape);
+    const value = metricValue(shape);
+    const rows = [];
+
+    if (value === null) {
+      rows.push('<span class="tt-value dim">এই মেট্রিকে ডেটা নেই</span>');
+      if (!state.ready) rows.push('<span class="tt-hint">ডেটা ফাইল আপলোড করুন</span>');
+    } else {
+      rows.push(`<span class="tt-value">${formatValue(value)}</span>`);
+      rows.push(`<span class="tt-hint">${state.metric === "overdueChange" ? "মোট পরিবর্তন" : "জেলা-গড়"}</span>`);
+    }
+    if (stat) {
+      rows.push(`<span class="tt-meta">${nf.format(stat.plazas)} প্লাজা`);
+      if (state.metric !== "collectedQty") rows.push(`Qty: ${formatPercent(stat.avgQtyPct)}`);
+      if (state.metric !== "collectableAmt") rows.push(`Amt: ${formatPercent(stat.avgAmtPct)}`);
+      rows[rows.length - 1] += "</span>";
+    }
+    return `<strong>${escapeHtml(info.bn)} <span class="tt-en">${escapeHtml(info.en)}</span></strong>${rows.join("")}`;
+  }
+
+  function selectDistrict(id) {
+    if (state.selected === id) {
+      clearSelection();
+      return;
+    }
+    state.selected = id;
+    renderMapSelection();
+    renderList();
+    renderDrawer();
+    openDrawer();
+  }
+
+  function clearSelection() {
+    if (!state.selected) { closeDrawer(); return; }
+    state.selected = null;
+    renderMapSelection();
+    renderList();
+    closeDrawer();
+  }
+
+  function openDrawer() {
+    document.getElementById("drawer").classList.add("open");
+    document.getElementById("drawer").setAttribute("aria-hidden", "false");
+    document.getElementById("drawerBackdrop").hidden = false;
+    document.body.classList.add("drawer-open");
+  }
+
+  function closeDrawer() {
+    document.getElementById("drawer").classList.remove("open");
+    document.getElementById("drawer").setAttribute("aria-hidden", "true");
+    document.getElementById("drawerBackdrop").hidden = true;
+    document.body.classList.remove("drawer-open");
+  }
+
+  /* ----------------------------------------------------------- rendering */
+
+  function renderAll() {
+    renderKpis();
+    renderLegend();
+    renderMapSelection();
+    renderList();
+    const hint = document.getElementById("metricHint");
+    if (hint) hint.textContent = metricConfig().hint;
+  }
+
+  function renderMapSelection() {
+    if (state.geoError) return;
+    // a district filter focuses that district on the map (others dim, never disappear)
+    const focus = state.selected || (state.districtFilter !== "all" ? state.districtFilter : null);
+    SVGMap.setSelected(focus);
+    const resetBtn = document.getElementById("resetView");
+    if (resetBtn) resetBtn.hidden = state.districtFilter === "all" && !state.selected;
+    renderMapNotice();
+  }
+
+  function renderMapNotice() {
+    if (state.ready && !metricAvailable()) {
+      const missing = state.metric === "overdueChange" ? "Overdue Increase/(Decrease)" : metricConfig().label;
+      showMapNotice("এই মেট্রিকের ডেটা নেই", `আপলোড করা রিপোর্টে “${missing}” কলামটি পাওয়া যায়নি।`);
+    } else if (state.ready) {
+      hideMapNotice();
+    }
+  }
+
+  function showMapNotice(title, text) {
+    const notice = document.getElementById("mapNotice");
+    notice.hidden = false;
+    notice.innerHTML = `<strong>${escapeHtml(title)}</strong><p>${text}</p>`;
+  }
+
+  function hideMapNotice() {
+    document.getElementById("mapNotice").hidden = true;
+  }
+
+  function renderKpis() {
+    const container = document.getElementById("kpis");
+    const covered = Object.keys(state.stats).length;
+    const totalDistricts = state.geo ? state.geo.features.length : 64;
+    const cards = [];
+
+    cards.push({
+      label: "মোট প্লাজা",
+      value: state.ready ? nf.format(state.entries.length) : "—",
+      sub: state.unmatched.length ? `${state.unmatched.length}টি প্লাজার জেলা শনাক্ত হয়নি` : "সব প্লাজা জেলায় ম্যাপ হয়েছে",
+      tone: state.unmatched.length ? "warn" : ""
+    });
+
+    cards.push({
+      label: "জেলা কভারেজ",
+      value: state.ready ? `${covered}/${totalDistricts}` : `0/${totalDistricts}`,
+      sub: state.ready ? `${totalDistricts - covered}টি জেলায় প্লাজা ডেটা নেই` : "ডেটা আপলোড করুন",
+      tone: state.ready && covered === totalDistricts ? "good" : ""
+    });
+
+    const national = state.ready ? PlazaParser.nationalMetric(state.entries, state.metric) : null;
+    cards.push({
+      label: state.metric === "overdueChange" ? "মোট Overdue পরিবর্তন" : "জাতীয় গড় (প্লাজা-ভিত্তিক)",
+      value: national === null ? "—" : formatCompact(national),
+      sub: metricConfig().label,
+      tone: national === null ? "" : (state.metric === "overdueChange"
+        ? (national <= 0 ? "good" : "bad")
+        : (national >= 90 ? "good" : national < 80 ? "bad" : "warn"))
+    });
+
+    const ranked = rankedDistricts();
+    cards.push({
+      label: state.metric === "overdueChange" ? "সর্বোচ্চ হ্রাস" : "সেরা পারফরম্যান্স",
+      value: ranked.length ? bdDistrictInfo(ranked[0].shape).bn : "—",
+      sub: ranked.length ? formatCompact(ranked[0].value) : "ডেটা নেই",
+      tone: "good"
+    });
+    cards.push({
+      label: state.metric === "overdueChange" ? "সর্বোচ্চ বৃদ্ধি" : "দুর্বল পারফরম্যান্স",
+      value: ranked.length ? bdDistrictInfo(ranked[ranked.length - 1].shape).bn : "—",
+      sub: ranked.length ? formatCompact(ranked[ranked.length - 1].value) : "ডেটা নেই",
+      tone: "bad"
+    });
+
+    container.innerHTML = cards.map(card => `
+      <div class="kpi ${card.tone ? "kpi-" + card.tone : ""}">
+        <span class="kpi-label">${escapeHtml(card.label)}</span>
+        <span class="kpi-value">${escapeHtml(card.value)}</span>
+        <span class="kpi-sub">${escapeHtml(card.sub)}</span>
+      </div>
+    `).join("");
+  }
+
+  /** Districts ordered best -> worst for the active metric. */
+  function rankedDistricts() {
+    const list = [];
+    Object.keys(state.stats).forEach(shape => {
+      const value = metricValue(shape);
+      if (value === null || value === undefined) return;
+      list.push({ shape, value });
+    });
+    list.sort((a, b) => state.metric === "overdueChange" ? a.value - b.value : b.value - a.value);
+    return list;
+  }
+
+  function renderLegend() {
+    const legendEl = document.getElementById("legend");
+    const counts = new Map();
+    let noData = 0;
+
+    if (state.geo) {
+      state.geo.features.forEach(feature => {
+        const value = metricValue(feature.properties.shapeName);
+        if (value === null || value === undefined) { noData++; return; }
+        const color = colorFor(value);
+        counts.set(color, (counts.get(color) || 0) + 1);
+      });
+    }
+
+    const items = bands().map(band => ({
+      color: band.color,
+      label: band.label,
+      count: counts.get(band.color) || 0
+    }));
+    items.push({ color: NO_DATA_COLOR, label: "ডেটা নেই", count: noData });
+
+    legendEl.innerHTML = items.map(item => `
+      <div class="legend-item${item.count === 0 ? " empty" : ""}">
+        <span class="legend-swatch" style="background:${item.color}"></span>
+        <span class="legend-label">${escapeHtml(item.label)}</span>
+        <span class="legend-count">${item.count}</span>
+      </div>
+    `).join("");
   }
 
   function populateDistrictFilter() {
     const select = document.getElementById("districtFilter");
-    const names = new Set();
-    bdData.features.forEach(f => {
-      const shape = f.properties.shapeName;
-      const name = BD_DISTRICTS[shape] ? BD_DISTRICTS[shape].en : shape;
-      names.add({ shape, name });
-    });
-    [...names].sort((a, b) => a.name.localeCompare(b.name)).forEach(({ shape, name }) => {
-      const opt = document.createElement("option");
-      opt.value = shape;
-      opt.textContent = name;
-      select.appendChild(opt);
-    });
-  }
+    select.innerHTML = '<option value="all">সব জেলা</option>';
+    const options = state.geo.features
+      .map(feature => ({
+        shape: feature.properties.shapeName,
+        info: bdDistrictInfo(feature.properties.shapeName)
+      }))
+      .sort((a, b) => a.info.en.localeCompare(b.info.en));
 
-  function initMetricTabs() {
-    document.querySelectorAll(".metric-tab").forEach(tab => {
-      tab.addEventListener("click", () => {
-        document.querySelectorAll(".metric-tab").forEach(t => t.classList.remove("active"));
-        tab.classList.add("active");
-        currentMetric = tab.dataset.metric;
-        updateLegend();
-        renderMap();
-        updateSidebar();
-      });
+    options.forEach(({ shape, info }) => {
+      const option = document.createElement("option");
+      option.value = shape;
+      option.textContent = `${info.bn} — ${info.en}`;
+      select.appendChild(option);
     });
   }
 
-  function initEventListeners() {
-    document.getElementById("dataFile").addEventListener("change", handleFileUpload);
-    document.getElementById("districtFilter").addEventListener("change", (e) => {
-      districtFilter = e.target.value;
-      renderMap();
-      updateSidebar();
-    });
-    document.getElementById("searchInput").addEventListener("input", (e) => {
-      updateSidebar(e.target.value);
-    });
-  }
-
-  async function handleFileUpload(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    const status = document.getElementById("uploadStatus");
-    status.textContent = "ফাইল পড়া হচ্ছে...";
-    status.classList.add("loading");
-
-    try {
-      const data = await file.arrayBuffer();
-      const wb = XLSX.read(data, { type: "array" });
-      const sheetName = wb.SheetNames[0];
-      const ws = wb.Sheets[sheetName];
-      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-
-      plazaData = parsePlazaRows(rows);
-      districtStats = computeDistrictStats();
-      status.textContent = `${Object.keys(plazaData).length} প্লাজা লোড হয়েছে`;
-      status.classList.remove("loading");
-      status.classList.add("success");
-
-      document.getElementById("mapEmpty").style.display = "none";
-      renderMap();
-      updateSidebar();
-      showToast("ডেটা লোড হয়েছে!");
-    } catch (err) {
-      console.error(err);
-      status.textContent = "ফাইল পড়তে সমস্যা হয়েছে";
-      status.classList.remove("loading");
-      status.classList.add("error");
-      showToast("ফাইল পড়তে ব্যর্থ হয়েছে");
-    }
-  }
-
-  function parsePlazaRows(rows) {
-    let headerRowIdx = -1;
-    for (let r = 0; r < Math.min(rows.length, 10); r++) {
-      const row = rows[r];
-      if (row && String(row[7] || "").trim() === "Plaza") {
-        headerRowIdx = r;
-        break;
-      }
-    }
-    if (headerRowIdx === -1) {
-      throw new Error("Header row not found");
-    }
-
-    const out = {};
-    for (let r = headerRowIdx + 1; r < rows.length; r++) {
-      const row = rows[r];
-      if (!row) continue;
-      const plaza = String(row[7] || "").trim();
-      if (!plaza || plaza === "Plaza") continue;
-
-      out[plaza] = {
-        collectableQty: toNum(row[9]),
-        collectedQty: toNum(row[10]),
-        qtyPct: toNum(row[11]),
-        collectableAmt: toNum(row[13]),
-        collectedAmt: toNum(row[16]),
-        advance: toNum(row[18]),
-        totalCollection: toNum(row[19]),
-        amtPct: toNum(row[20]),
-        prevOverdue: toNum(row[21]),
-        runningOverdue: toNum(row[23]),
-        overdueChange: toNum(row[25])
-      };
-    }
-    return out;
-  }
-
-  function toNum(v) {
-    if (v === "" || v === null || v === undefined) return null;
-    const n = parseFloat(String(v).replace(/,/g, ""));
-    return isNaN(n) ? null : n;
-  }
-
-  function getDistrictForPlaza(plaza) {
-    const found = PLAZA_DISTRICT.find(m => m.plaza === plaza);
-    if (!found) return null;
-    return normalizeDistrict(found.district);
-  }
-
-  function normalizeDistrict(name) {
-    const map = {
-      "Barishal": "Barisal",
-      "Chapainawabganj": "Nawabganj",
-      "Chattogram": "Chittagong",
-      "Moulvibazar": "Maulvibazar",
-      "Netrokona": "Netrakona",
-      "Cumilla": "Comilla",
-      "Jashore": "Jessore",
-      "Khagrachhari": "Khagrachhari",
-      "Bogura": "Bogra",
-      "Brahmanbaria": "Brahamanbaria"
-    };
-    return map[name] || name;
-  }
-
-  function computeDistrictStats() {
-    const stats = {};
-    if (!plazaData) return stats;
-
-    Object.keys(plazaData).forEach(plaza => {
-      const district = getDistrictForPlaza(plaza);
-      if (!district) return;
-      if (!stats[district]) {
-        stats[district] = { pcts: [], amounts: [], overdues: [], plazas: 0 };
-      }
-      const d = plazaData[plaza];
-      if (d.qtyPct !== null) stats[district].pcts.push(d.qtyPct);
-      if (d.amtPct !== null) stats[district].amounts.push(d.amtPct);
-      if (d.overdueChange !== null) stats[district].overdues.push(d.overdueChange);
-      stats[district].plazas++;
-    });
-
-    Object.keys(stats).forEach(d => {
-      stats[d].avgQtyPct = avg(stats[d].pcts);
-      stats[d].avgAmtPct = avg(stats[d].amounts);
-      stats[d].sumOverdueChange = sum(stats[d].overdues);
-    });
-    return stats;
-  }
-
-  function avg(arr) {
-    if (!arr.length) return null;
-    return arr.reduce((a, b) => a + b, 0) / arr.length;
-  }
-
-  function sum(arr) {
-    if (!arr.length) return null;
-    return arr.reduce((a, b) => a + b, 0);
-  }
-
-  function getMetricValue(district) {
-    const s = districtStats[district];
-    if (!s) return null;
-    if (currentMetric === "collectedQty") return s.avgQtyPct;
-    if (currentMetric === "collectableAmt") return s.avgAmtPct;
-    if (currentMetric === "overdueChange") return s.sumOverdueChange;
-    return null;
-  }
-
-  function getColorForValue(value, metric) {
-    if (value === null || value === undefined) return "#64748b";
-
-    // Overdue Increase/(Decrease): 0 or negative = Dark Green, >0 = Dark Red
-    if (metric === "overdueChange") {
-      if (value <= 0) return "#166534";
-      return "#7f1d1d";
-    }
-
-    // Collected Acc Qty & Collectable Amt. (%): percentage bands
-    if (value < 70) return "#dc2626";
-    if (value < 80) return "#facc15";
-    if (value < 90) return "#86efac";
-    return "#16a34a";
-  }
-
-  function updateLegend() {
-    const legend = document.getElementById("legend");
-    let items;
-    if (currentMetric === "overdueChange") {
-      items = [
-        { color: "#166534", label: "0 এবং নেতিবাচক (কমানো)" },
-        { color: "#7f1d1d", label: "> 0 (বৃদ্ধি)" },
-        { color: "#64748b", label: "কোনো ডেটা নেই" }
-      ];
-    } else {
-      items = [
-        { color: "#dc2626", label: "0 – 69.99%" },
-        { color: "#facc15", label: "70 – 79.99%" },
-        { color: "#86efac", label: "80 – 89.99%" },
-        { color: "#16a34a", label: "90 – 100%" },
-        { color: "#64748b", label: "কোনো ডেটা নেই" }
-      ];
-    }
-    legend.innerHTML = items.map(it =>
-      `<div class="legend-item"><span class="legend-swatch" style="background:${it.color}"></span> ${it.label}</div>`
-    ).join("");
-  }
-
-  function getPathStyle(feature) {
-    const shape = feature.properties.shapeName;
-    const value = getMetricValue(shape);
-    const color = getColorForValue(value, currentMetric);
-    return {
-      fill: color,
-      stroke: "rgba(255,255,255,0.6)",
-      strokeWidth: 1,
-      fillOpacity: 0.85,
-      className: value === null ? "no-data-region" : "data-region"
-    };
-  }
-
-  function isFiltered(shape) {
-    return districtFilter !== "all" && districtFilter !== shape;
-  }
-
-  function renderMap() {
-    const data = {
-      ...bdData,
-      features: bdData.features.filter(f => {
-        return !isFiltered(f.properties.shapeName);
-      })
-    };
-    SVGMap.render(data, "bd", () => {}, getPathStyle, getLabel, getTooltip);
-    document.getElementById("mapEmpty").style.display = "none";
-  }
-
-  function getLabel(feature) {
-    const shape = feature.properties.shapeName;
-    return BD_DISTRICTS[shape] ? BD_DISTRICTS[shape].bn : shape;
-  }
-
-  function getTooltip(feature) {
-    const shape = feature.properties.shapeName;
-    const name = BD_DISTRICTS[shape] ? BD_DISTRICTS[shape].en : shape;
-    const bn = BD_DISTRICTS[shape] ? BD_DISTRICTS[shape].bn : "";
-    const value = getMetricValue(shape);
-    let display = "—";
-    if (value !== null) {
-      display = currentMetric === "overdueChange"
-        ? (value > 0 ? "+" : "") + value.toLocaleString(undefined, { maximumFractionDigits: 0 })
-        : value.toFixed(1) + "%";
-    }
-    return `<strong>${name} ${bn}</strong><br><span class="tt-value">${display}</span>`;
-  }
-
-  function updateSidebar(filter = "") {
-    const list = [];
-    bdData.features.forEach(f => {
-      const shape = f.properties.shapeName;
-      const name = BD_DISTRICTS[shape] ? BD_DISTRICTS[shape].en : shape;
-      const value = getMetricValue(shape);
-      list.push({ shape, name, value, isFiltered: isFiltered(shape) });
-    });
-
-    const filtered = list.filter(item => {
-      if (districtFilter !== "all" && item.shape !== districtFilter) return false;
-      if (filter) {
-        return item.name.toLowerCase().includes(filter.toLowerCase());
-      }
-      return true;
-    }).sort((a, b) => a.name.localeCompare(b.name));
-
+  function renderList() {
     const container = document.getElementById("locationList");
-    container.innerHTML = "";
+    if (!state.geo) { container.innerHTML = ""; return; }
 
-    filtered.forEach(item => {
-      const div = document.createElement("div");
-      div.className = "location-item";
-      const color = getColorForValue(item.value, currentMetric);
-      const display = item.value !== null
-        ? (currentMetric === "overdueChange"
-            ? (item.value > 0 ? "+" : "") + item.value.toLocaleString(undefined, { maximumFractionDigits: 0 })
-            : item.value.toFixed(1) + "%")
-        : "—";
-      div.innerHTML = `
-        <span class="district-dot" style="background:${color}"></span>
-        <span class="location-name">${item.name}</span>
-        <span class="location-value">${display}</span>
-      `;
-      container.appendChild(div);
+    const query = PlazaParser.normKey(state.search);
+    let rows = state.geo.features.map(feature => {
+      const shape = feature.properties.shapeName;
+      const info = bdDistrictInfo(shape);
+      const stat = state.stats[shape];
+      return {
+        shape,
+        info,
+        value: metricValue(shape),
+        plazas: stat ? stat.plazas : 0
+      };
     });
 
-    if (filtered.length === 0) {
-      container.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-dim);">কিছু পাওয়া যায়নি</div>`;
+    if (state.districtFilter !== "all") {
+      rows = rows.filter(row => row.shape === state.districtFilter);
     }
+    if (query) {
+      rows = rows.filter(row => {
+        const stat = state.stats[row.shape];
+        const plazaHit = stat && stat.list.some(entry => PlazaParser.normKey(entry.plaza).includes(query));
+        return PlazaParser.normKey(row.info.en).includes(query) ||
+          PlazaParser.normKey(row.info.bn).includes(query) ||
+          PlazaParser.normKey(row.shape).includes(query) ||
+          plazaHit;
+      });
+    }
+
+    const byName = (a, b) => a.info.en.localeCompare(b.info.en);
+    if (state.sort === "name-asc") rows.sort(byName);
+    else if (state.sort === "name-desc") rows.sort((a, b) => byName(b, a));
+    else if (state.sort === "value-desc" || state.sort === "value-asc") {
+      const dir = state.sort === "value-desc" ? -1 : 1;
+      rows.sort((a, b) => {
+        if (a.value === null && b.value === null) return byName(a, b);
+        if (a.value === null) return 1;
+        if (b.value === null) return -1;
+        return (a.value - b.value) * dir;
+      });
+    } else if (state.sort === "plazas") {
+      rows.sort((a, b) => b.plazas - a.plazas || byName(a, b));
+    }
+
+    const isPercent = metricConfig().kind === "percent";
+    container.innerHTML = rows.map(row => {
+      const barWidth = isPercent && row.value !== null ? Math.max(0, Math.min(100, row.value)) : 0;
+      return `
+        <button class="location-item${row.shape === state.selected ? " active" : ""}" data-shape="${row.shape}">
+          <span class="district-dot" style="background:${colorFor(row.value)}"></span>
+          <span class="location-main">
+            <span class="location-name">${escapeHtml(row.info.bn)}<em>${escapeHtml(row.info.en)}</em></span>
+            ${isPercent ? `<span class="location-bar"><i style="width:${barWidth}%;background:${colorFor(row.value)}"></i></span>` : ""}
+          </span>
+          <span class="location-value${row.value === null ? " dim" : ""}">${formatValue(row.value)}</span>
+          <span class="location-plazas">${row.plazas ? nf.format(row.plazas) + " প্লাজা" : "—"}</span>
+        </button>`;
+    }).join("");
+
+    if (!rows.length) {
+      container.innerHTML = '<div class="list-empty">কোনো জেলা পাওয়া যায়নি</div>';
+    }
+
+    container.querySelectorAll(".location-item").forEach(el => {
+      const shape = el.dataset.shape;
+      el.addEventListener("click", () => selectDistrict(shape));
+      el.addEventListener("pointerenter", () => SVGMap.setHovered(shape));
+      el.addEventListener("pointerleave", () => SVGMap.setHovered(null));
+      el.addEventListener("focus", () => SVGMap.setHovered(shape));
+      el.addEventListener("blur", () => SVGMap.setHovered(null));
+    });
+
+    const countEl = document.getElementById("listCount");
+    if (countEl) {
+      countEl.textContent = state.ready
+        ? `${rows.length} জেলা দেখানো হচ্ছে`
+        : "ডেটা আপলোড করলে ফলাফল দেখা যাবে";
+    }
+    renderDrawer();
   }
 
-  function showToast(message) {
+  function renderDrawer() {
+    if (!state.selected) return;
+    const shape = state.selected;
+    const info = bdDistrictInfo(shape);
+    const stat = state.stats[shape];
+
+    document.getElementById("drawerTitle").textContent = info.bn || shape;
+    document.getElementById("drawerSub").textContent = stat
+      ? `${info.en} • ${nf.format(stat.plazas)} প্লাজা`
+      : `${info.en} • কোনো প্লাজা ডেটা নেই`;
+
+    const stats = [
+      { label: metricConfig().label, value: formatValue(metricValue(shape)), primary: true },
+      { label: "গড় Qty %", value: formatPercent(stat ? stat.avgQtyPct : null) },
+      { label: "গড় Amt %", value: formatPercent(stat ? stat.avgAmtPct : null) },
+      { label: "Overdue পরিবর্তন", value: stat && stat.sumOverdueChange !== null ? nf.format(Math.round(stat.sumOverdueChange)) : "—" }
+    ];
+    document.getElementById("drawerStats").innerHTML = stats.map(item => `
+      <div class="drawer-stat${item.primary ? " primary" : ""}">
+        <span class="drawer-stat-label">${escapeHtml(item.label)}</span>
+        <span class="drawer-stat-value">${escapeHtml(item.value)}</span>
+      </div>`).join("");
+
+    const totals = stat && stat.sum ? `
+      <div class="drawer-totals">
+        <div><span>Collectable Amt</span><strong>${nf.format(Math.round(stat.sum.collectableAmt))}</strong></div>
+        <div><span>Collected Amt</span><strong>${nf.format(Math.round(stat.sum.collectedAmt))}</strong></div>
+        <div><span>Collectable Qty</span><strong>${nf.format(Math.round(stat.sum.collectableQty))}</strong></div>
+        <div><span>Collected Qty</span><strong>${nf.format(Math.round(stat.sum.collectedQty))}</strong></div>
+      </div>` : "";
+
+    const listEl = document.getElementById("drawerList");
+    const listTitle = document.getElementById("drawerListTitle");
+    if (!stat || !stat.list.length) {
+      listTitle.textContent = "প্লাজা তালিকা";
+      listEl.innerHTML = '<div class="list-empty">এই জেলার জন্য কোনো প্লাজা ডেটা পাওয়া যায়নি</div>';
+    } else {
+      const key = state.metric === "overdueChange" ? "overdueChange"
+        : state.metric === "collectableAmt" ? "amtPct" : "qtyPct";
+      const sorted = stat.list.slice().sort((a, b) => {
+        const av = a.data[key];
+        const bv = b.data[key];
+        if (av === null) return 1;
+        if (bv === null) return -1;
+        return state.metric === "overdueChange" ? av - bv : bv - av;
+      });
+      listTitle.textContent = `প্লাজা তালিকা (${nf.format(sorted.length)})`;
+      listEl.innerHTML = sorted.map(entry => `
+        <div class="drawer-row">
+          <span class="drawer-row-main">
+            <span class="drawer-row-name">${escapeHtml(entry.plaza.replace(/^Walton Plaza-/, ""))}</span>
+            <span class="drawer-row-meta">${escapeHtml(entry.area || entry.division || "")}</span>
+          </span>
+          <span class="drawer-row-value${entry.data[key] === null ? " dim" : ""}">${formatValue(entry.data[key])}</span>
+        </div>`).join("");
+    }
+    const totalsHost = document.getElementById("drawerTotals");
+    if (totalsHost) totalsHost.innerHTML = totals;
+  }
+
+  function setStatus(text, tone) {
+    const el = document.getElementById("uploadStatus");
+    el.textContent = text;
+    el.className = "upload-status" + (tone ? " " + tone : "");
+  }
+
+  function showToast(message, tone) {
     const toast = document.getElementById("toast");
     toast.textContent = message;
-    toast.classList.add("show");
+    toast.className = "toast show" + (tone ? " " + tone : "");
     clearTimeout(toast._timer);
-    toast._timer = setTimeout(() => toast.classList.remove("show"), 2500);
+    toast._timer = setTimeout(() => { toast.className = "toast"; }, 3200);
   }
 
-  return { init };
+  /* ---------------------------------------------------------------- export */
+
+  async function runExport(kind) {
+    if (!state.ready) return;
+    try {
+      if (kind === "csv") exportCsv();
+      else if (kind === "json") exportJson();
+      else await exportImage();
+    } catch (err) {
+      console.error(err);
+      showToast("এক্সপোর্ট করা যায়নি", "error");
+    }
+  }
+
+  function exportRows() {
+    return state.geo.features
+      .map(feature => {
+        const shape = feature.properties.shapeName;
+        const stat = state.stats[shape];
+        const info = bdDistrictInfo(shape);
+        return {
+          district: info.en,
+          districtBn: info.bn,
+          plazas: stat ? stat.plazas : 0,
+          avgQtyPct: stat ? stat.avgQtyPct : null,
+          avgAmtPct: stat ? stat.avgAmtPct : null,
+          overdueChange: stat ? stat.sumOverdueChange : null,
+          collectableAmt: stat ? stat.sum.collectableAmt : 0,
+          collectedAmt: stat ? stat.sum.collectedAmt : 0
+        };
+      })
+      .sort((a, b) => a.district.localeCompare(b.district));
+  }
+
+  function exportCsv() {
+    const header = ["District", "District (BN)", "Plazas", "Avg Collected Qty (%)", "Avg Collected Amt (%)",
+      "Overdue Change", "Collectable Amt", "Collected Amt"];
+    const lines = [header.join(",")];
+    exportRows().forEach(row => {
+      lines.push([
+        quote(row.district),
+        quote(row.districtBn),
+        row.plazas,
+        row.avgQtyPct === null ? "" : row.avgQtyPct.toFixed(2),
+        row.avgAmtPct === null ? "" : row.avgAmtPct.toFixed(2),
+        row.overdueChange === null ? "" : Math.round(row.overdueChange),
+        Math.round(row.collectableAmt),
+        Math.round(row.collectedAmt)
+      ].join(","));
+    });
+    download(new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" }),
+      `plaza-district-summary-${stamp()}.csv`);
+    showToast("জেলা সারসংক্ষেপ CSV ডাউনলোড হয়েছে");
+  }
+
+  function exportJson() {
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      source: state.fileName || null,
+      metric: state.metric,
+      districts: exportRows(),
+      plazas: state.entries.map(entry => Object.assign({
+        plaza: entry.plaza,
+        district: entry.district || null,
+        area: entry.area || "",
+        division: entry.division || ""
+      }, entry.data))
+    };
+    download(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }),
+      `plaza-collection-data-${stamp()}.json`);
+    showToast("প্লাজা ডেটা JSON ডাউনলোড হয়েছে");
+  }
+
+  async function exportImage() {
+    const colors = themeColors();
+    const legendItems = bands().map(band => ({ color: band.color, label: band.label }));
+    legendItems.push({ color: NO_DATA_COLOR, label: "ডেটা নেই" });
+
+    const { markup, width, height } = SVGMap.buildExportSVG({
+      title: "ওয়ালটন প্লাজা কালেকশন ম্যাপ",
+      subtitle: `${metricConfig().label} — জেলাভিত্তিক`,
+      legend: legendItems,
+      background: colors.background,
+      text: colors.text,
+      muted: colors.muted,
+      note: state.fileName ? `সোর্স: ${state.fileName}` : ""
+    });
+
+    const scale = 2;
+    const svgBlob = new Blob([markup], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(svgBlob);
+    try {
+      const image = await loadImage(url);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(width * scale);
+      canvas.height = Math.round(height * scale);
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = colors.background;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      await new Promise((resolve, reject) => {
+        canvas.toBlob(blob => {
+          if (!blob) { reject(new Error("PNG তৈরি করা যায়নি")); return; }
+          download(blob, `plaza-collection-map-${stamp()}.png`);
+          resolve();
+        }, "image/png");
+      });
+      showToast("ম্যাপ PNG ডাউনলোড হয়েছে");
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("ছবি তৈরি করা যায়নি"));
+      image.src = src;
+    });
+  }
+
+  function quote(value) {
+    const str = String(value === null || value === undefined ? "" : value);
+    return /[",\n]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
+  }
+
+  function stamp() {
+    const d = new Date();
+    const pad = n => String(n).padStart(2, "0");
+    return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+  }
+
+  function download(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  return {
+    init,
+    internals: {
+      state,
+      setMetric,
+      ingestBuffer,
+      loadEntries,
+      renderAll,
+      renderList,
+      selectDistrict,
+      loadDemoData,
+      exportCsv,
+      exportJson
+    }
+  };
 })();
 
 document.addEventListener("DOMContentLoaded", App.init);
