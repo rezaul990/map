@@ -10,7 +10,7 @@
 <!-- Bengali/Latin fonts are self-hosted (vendor/fonts): no external font CDN, works offline -->
 <link rel="preload" as="font" type="font/woff2" href="vendor/fonts/hind-siliguri-400-bengali.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="vendor/fonts/hind-siliguri-600-bengali.woff2" crossorigin>
-<link rel="stylesheet" href="css/style.css?v=5">
+<link rel="stylesheet" href="css/style.css?v=6">
 <!--
   Critical map geometry, inline on purpose.
 
@@ -122,6 +122,7 @@
 
     <section class="map-container" id="mapContainer">
       <div class="map-toolbar">
+      <button id="zoomChip" class="zoom-chip" type="button" hidden>জুম 100% — পুরো ম্যাপ দেখুন</button>
         <label class="switch">
           <input type="checkbox" id="labelToggle" checked>
           <span>জেলার নাম</span>
@@ -134,7 +135,6 @@
         <svg class="icon-collapse" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3m8 0v-3a2 2 0 0 1 2-2h3"/></svg>
         <span class="map-expand-label">পুরো স্ক্রিন</span>
       </button>
-      <button id="zoomChip" class="zoom-chip" type="button" hidden>জুম 100% — পুরো ম্যাপ দেখুন</button>
       <div class="map-zoom" role="group" aria-label="ম্যাপ জুম">
         <button id="zoomIn" class="zoom-btn" type="button" title="জুম ইন (+)" aria-label="জুম ইন">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -204,10 +204,10 @@ if (typeof XLSX === "undefined") {
   document.write('<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"><\/script>');
 }
 </script>
-<script src="js/plaza.js?v=5"></script>
-<script src="js/data.js?v=5"></script>
-<script src="js/parse.js?v=5"></script>
-<script src="js/map.js?v=5"></script>
-<script src="js/app.js?v=5"></script>
+<script src="js/plaza.js?v=6"></script>
+<script src="js/data.js?v=6"></script>
+<script src="js/parse.js?v=6"></script>
+<script src="js/map.js?v=6"></script>
+<script src="js/app.js?v=6"></script>
 </body>
 </html>

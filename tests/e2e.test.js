@@ -414,6 +414,45 @@ function report() {
     assert.ok(!/getBoundingClientRect[\s\S]{0,400}style\.width/.test(source), "no measure-then-size loop");
   });
 
+  check("the drawing box is pinned by the script, not left to CSS", () => {
+    const host = doc.getElementById("mapSvg");
+    // this element used to be given `position: relative` inline, which cancelled the
+    // stylesheet, unpinned the box and made the svg fall back to 300x150
+    const mapSource = fs.readFileSync(path.join(ROOT, "js", "map.js"), "utf8");
+    assert.ok(!/style\.position\s*=\s*["']relative["']/.test(mapSource),
+      "map.js must not put the drawing box back in flow");
+    assert.strictEqual(host.style.position, "absolute", "box must be pinned, inline");
+    ["top", "right", "bottom", "left"].forEach(side => {
+      assert.match(host.style[side], /^\d+px$/, `${side} offset is not applied: "${host.style[side]}"`);
+    });
+    assert.strictEqual(host.style.top, "40px", "base geometry");
+    assert.strictEqual(host.style.left, "6px", "base geometry");
+  });
+
+  check("the box geometry follows the expanded panel", () => {
+    const host = doc.getElementById("mapSvg");
+    App.internals.toggleExpanded();
+    assert.strictEqual(doc.getElementById("mapContainer").classList.contains("map-expanded"), true);
+    assert.strictEqual(host.style.top, "44px", "expanded geometry");
+    assert.strictEqual(host.style.left, "10px", "expanded geometry");
+    App.internals.toggleExpanded();
+    assert.strictEqual(host.style.top, "40px", "back to the base geometry");
+    assert.strictEqual(host.style.left, "6px", "back to the base geometry");
+  });
+
+  check("the script and the stylesheet agree on the geometry", () => {
+    const host = doc.getElementById("mapSvg");
+    const inline = fs.readFileSync(path.join(ROOT, "css/style.css"), "utf8");
+    assert.ok(inline.indexOf("top: 40px") !== -1 && inline.indexOf("left: 6px") !== -1,
+      "css keeps its own copy for the no-script case");
+    // and the values the script applies must be the same ones the css declares
+    assert.strictEqual(host.style.top, "40px");
+    const map = fs.readFileSync(path.join(ROOT, "js", "map.js"), "utf8");
+    ["top: 44", "right: 10", "bottom: 8", "left: 10"].forEach(entry => {
+      assert.ok(map.indexOf(entry) !== -1, "map.js BOX table drifted: " + entry);
+    });
+  });
+
   check("the map is always as large as the panel allows (never a thumbnail)", () => {
     [
       { width: 470, height: 530, bound: "height" },

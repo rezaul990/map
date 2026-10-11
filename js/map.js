@@ -37,6 +37,55 @@ const SVGMap = (() => {
   let pointers = new Map();
   let pinch = null;
   let dragged = false;
+  let boxState = "";
+
+  /*
+   * Geometry of the drawing box, owned by JavaScript.
+   *
+   * CSS positions the box too (and index.html repeats it inline for the no-script
+   * case), but this module used to write `position: relative` on the box, which
+   * silently cancelled the stylesheet: the box stopped being pinned to the panel,
+   * its height fell back to the content and the svg dropped to its intrinsic
+   * 300x150 size. That is the "the map is a small block" report. Inline styles beat
+   * every stylesheet — cached, stale or missing — so the geometry is applied from
+   * here and re-applied whenever the state or the viewport changes.
+   */
+  const BOX = {
+    base: { top: 40, right: 6, bottom: 6, left: 6 },
+    expanded: { top: 44, right: 10, bottom: 8, left: 10 },
+    compact: { top: 38, right: 4, bottom: 4, left: 4 },
+    short: { top: 36, right: 6, bottom: 6, left: 6 }
+  };
+
+  function mediaMatches(query) {
+    try {
+      return typeof window !== "undefined" && typeof window.matchMedia === "function"
+        && window.matchMedia(query).matches === true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function boxGeometry() {
+    if (container && container.closest && container.closest(".map-expanded")) return BOX.expanded;
+    if (mediaMatches("(max-width: 720px)")) return BOX.compact;
+    if (mediaMatches("(max-height: 720px)")) return BOX.short;
+    return BOX.base;
+  }
+
+  function applyBox() {
+    if (!container || !container.style) return false;
+    const geometry = boxGeometry();
+    const key = [geometry.top, geometry.right, geometry.bottom, geometry.left].join("/");
+    if (key === boxState) return false;
+    boxState = key;
+    container.style.position = "absolute";
+    container.style.top = geometry.top + "px";
+    container.style.right = geometry.right + "px";
+    container.style.bottom = geometry.bottom + "px";
+    container.style.left = geometry.left + "px";
+    return true;
+  }
 
   /* ------------------------------------------------------------------ setup */
 
@@ -51,8 +100,8 @@ const SVGMap = (() => {
       onZoom: options.onZoom || (() => {})
     };
     container.innerHTML = "";
-    container.style.position = "relative";
     container.classList.add("has-svg");
+    applyBox();
 
     svg = document.createElementNS(NS, "svg");
     svg.setAttribute("role", "img");
@@ -87,14 +136,34 @@ const SVGMap = (() => {
 
     attachInteraction();
 
-    // re-evaluate label legibility when the panel is resized (read-only observer:
-    // it never sizes anything, so it cannot feed back into layout)
+    // re-evaluate the box geometry and the label legibility when the panel changes
+    // size (the observer only re-renders: it never sizes the svg, so it cannot feed
+    // back into layout)
     if (typeof ResizeObserver !== "undefined" && svg) {
       const observer = new ResizeObserver(() => {
+        applyBox();
         hooks.onZoom(view.k, view.k > 1.001, applyLabelLegibility() === true);
       });
       observer.observe(svg);
     }
+
+    // the compact/short-viewport geometry is chosen by media queries, so react to
+    // them explicitly (older engines have no addEventListener on MediaQueryList)
+    if (typeof window !== "undefined" && window.addEventListener) {
+      window.addEventListener("resize", () => {
+        if (applyBox()) hooks.onZoom(view.k, view.k > 1.001, applyLabelLegibility() === true);
+      });
+    }
+    ["(max-width: 720px)", "(max-height: 720px)"].forEach(query => {
+      try {
+        const list = window.matchMedia && window.matchMedia(query);
+        const onChange = () => {
+          if (applyBox()) hooks.onZoom(view.k, view.k > 1.001, applyLabelLegibility() === true);
+        };
+        if (list && list.addEventListener) list.addEventListener("change", onChange);
+        else if (list && list.addListener) list.addListener(onChange);
+      } catch (err) { /* no media query support: the base geometry is fine */ }
+    });
   }
 
   /* ----------------------------------------------------------- zoom & pan */
@@ -309,6 +378,7 @@ const SVGMap = (() => {
     if (!container) return;
     const panel = container.closest(".map-container") || container;
     panel.classList.toggle("map-expanded", !!expanded);
+    applyBox();
     document.body.classList.toggle("map-expanded-open", !!expanded);
     const button = document.getElementById("mapExpand");
     if (button) {
@@ -829,6 +899,7 @@ const SVGMap = (() => {
     setHovered(id) { hoverId = id; refresh(); },
     getSelected() { return selectedId; },
     setLabelsVisible(visible) { labelsVisible = visible; refresh(); },
+    applyBox,
     getSize,
     buildExportSVG
   };
