@@ -7,39 +7,70 @@ const App = (() => {
   const PREF_KEY = "plaza-map-prefs-v2";
   const MAX_FILE_MB = 25;
 
+  /**
+   * Report metrics. `columns` are the raw report columns behind each metric,
+   * exactly as they appear in the summary report:
+   *
+   *   Collected Acc Qty  -> Collectable Acc. Qty. | Collected Acc. Qty. | Collectable Vs. Collected Acc Qty (%)
+   *   Collectable Amt.   -> Collectable Amt.      | Collected Amt.      | Collectable Vs. Collected Amt. (%)
+   *   Overdue            -> Previous Month Overdue| Running Month Overdue | Overdue Increase/(Decrease)
+   */
   const METRICS = {
     collectedQty: {
-      label: "Collected Acc Qty (%)",
-      statKey: "avgQtyPct",
+      label: "Collectable Vs. Collected Acc Qty (%)",
+      short: "Collected Acc Qty",
       kind: "percent",
-      hint: "প্রতিটি প্লাজার “Collectable Vs. Collected Acc Qty (%)” এর জেলা-ভিত্তিক গড়"
+      columns: ["collectableQty", "collectedQty", "qtyPct"],
+      hint: "জেলার মোট Collected Acc. Qty. ÷ মোট Collectable Acc. Qty. (নিচের কলাম থেকে জেলা-ভিত্তিক মান)"
     },
     collectableAmt: {
-      label: "Collectable Vs. Collected Amt (%)",
-      statKey: "avgAmtPct",
+      label: "Collectable Vs. Collected Amt. (%)",
+      short: "Collectable Amt.",
       kind: "percent",
-      hint: "প্রতিটি প্লাজার “Collectable Vs. Collected Amt. (%)” এর জেলা-ভিত্তিক গড়"
+      columns: ["collectableAmt", "collectedAmt", "amtPct"],
+      hint: "জেলার মোট Collected Amt. ÷ মোট Collectable Amt. (নিচের কলাম থেকে জেলা-ভিত্তিক মান)"
     },
     overdueChange: {
       label: "Overdue Increase/(Decrease)",
-      statKey: "sumOverdueChange",
+      short: "Overdue",
       kind: "amount",
-      hint: "জেলার সব প্লাজার Overdue Increase/(Decrease) এর যোগফল — ঋণাত্মক মান মানে ওভারডিউ কমেছে"
+      columns: ["prevOverdue", "runningOverdue", "overdueChange"],
+      hint: "Running Month Overdue − Previous Month Overdue (জেলার সব প্লাজার যোগফল) — ঋণাত্মক মান মানে ওভারডিউ কমেছে"
     }
   };
 
-  const PERCENT_BANDS = [
+  /** Column labels as printed in the report. */
+  const COLUMN_LABELS = {
+    collectableQty: "Collectable Acc. Qty.",
+    collectedQty: "Collected Acc. Qty.",
+    qtyPct: "Collectable Vs. Collected Acc Qty (%)",
+    collectableAmt: "Collectable Amt.",
+    collectedAmt: "Collected Amt.",
+    amtPct: "Collectable Vs. Collected Amt. (%)",
+    prevOverdue: "Previous Month Overdue",
+    runningOverdue: "Running Month Overdue",
+    overdueChange: "Overdue Increase/(Decrease)",
+    totalCollection: "Total Collection (Collected + Advance)",
+    advance: "Collection Advance"
+  };
+
+  /** Absolute bands, matching the report's own 70/80/90 thresholds. */
+  const FIXED_PERCENT_BANDS = [
     { color: "#dc2626", label: "0 – 69.99%", min: -Infinity, max: 70, tone: "bad" },
     { color: "#facc15", label: "70 – 79.99%", min: 70, max: 80, tone: "warn" },
     { color: "#86efac", label: "80 – 89.99%", min: 80, max: 90, tone: "ok" },
     { color: "#16a34a", label: "90 – 100%", min: 90, max: Infinity, tone: "good" }
   ];
+  const FIXED_OVERDUE_BANDS = [
+    { color: "#16a34a", label: "0 বা তার কম (ওভারডিউ কমেছে)", min: -Infinity, max: 0.0000001, tone: "good" },
+    { color: "#dc2626", label: "0 এর বেশি (ওভারডিউ বেড়েছে)", min: 0.0000001, max: Infinity, tone: "bad" }
+  ];
+
   const NO_DATA_COLOR = "#64748b";
 
-  const OVERDUE_BANDS = [
-    { color: "#16a34a", label: "0 বা তার কম (ওভারডিউ কমেছে)", min: -Infinity, max: 0.0000001 },
-    { color: "#dc2626", label: "0 এর বেশি (ওভারডিউ বেড়েছে)", min: 0.0000001, max: Infinity }
-  ];
+  /** Colours used by the adaptive (quartile) scale, best -> worst. */
+  const RANK_COLORS = { best: "#16a34a", good: "#86efac", warn: "#facc15", bad: "#dc2626" };
+  const OVERDUE_RANK_COLORS = { best: "#16a34a", warn: "#facc15", bad: "#dc2626" };
 
   const nf = new Intl.NumberFormat("en-IN");
 
@@ -49,6 +80,7 @@ const App = (() => {
     stats: {},
     plazaIndex: new Map(),
     metric: "collectedQty",
+    scale: "relative",
     districtFilter: "all",
     search: "",
     sort: "name-asc",
@@ -67,7 +99,9 @@ const App = (() => {
   /* ------------------------------------------------------------------ init */
 
   async function init() {
-    applyTheme(loadPrefs().theme || "dark");
+    const prefs = loadPrefs();
+    applyTheme(prefs.theme || "dark");
+    state.scale = prefs.scale === "fixed" ? "fixed" : "relative";
     bindStaticEvents();
     initMap();
 
@@ -140,6 +174,13 @@ const App = (() => {
     document.getElementById("sortSelect").addEventListener("change", event => {
       state.sort = event.target.value;
       renderList();
+    });
+
+    document.getElementById("scaleSelect").addEventListener("change", event => {
+      state.scale = event.target.value === "fixed" ? "fixed" : "relative";
+      savePrefs({ scale: state.scale });
+      renderAll();
+      showToast(state.scale === "fixed" ? "নির্দিষ্ট থ্রেশহোল্ড (৭০/৮০/৯০%) দেখানো হচ্ছে" : "তুলনামূলক স্কেল দেখানো হচ্ছে");
     });
 
     document.querySelectorAll(".metric-tab").forEach(tab => {
@@ -480,17 +521,82 @@ const App = (() => {
     });
   }
 
+  let bandCache = { key: null, bands: [] };
+
+  /**
+   * Colour bands for the active metric.
+   *
+   * "fixed"    -> the report's own thresholds (70/80/90%).
+   * "relative" -> quartiles of the districts present in the data, so reports whose
+   *               collection rates sit far below 70% (e.g. 5–30%) still produce a
+   *               readable map instead of a solid red country. Overdue is judged
+   *               against each district's own overdue book.
+   */
   function bands() {
-    return state.metric === "overdueChange" ? OVERDUE_BANDS : PERCENT_BANDS;
+    const key = [state.metric, state.scale, state.entries.length, Object.keys(state.stats).length].join("|");
+    if (bandCache.key === key) return bandCache.bands;
+    const computed = state.scale === "fixed" ? fixedBands() : relativeBands();
+    bandCache = { key, bands: computed };
+    return computed;
+  }
+
+  function fixedBands() {
+    return (state.metric === "overdueChange" ? FIXED_OVERDUE_BANDS : FIXED_PERCENT_BANDS)
+      .map(band => Object.assign({}, band));
+  }
+
+  function relativeBands() {
+    const percent = metricConfig().kind === "percent";
+    const values = [];
+    Object.keys(state.stats).forEach(shape => {
+      const value = metricValue(shape);
+      if (value !== null && value !== undefined && isFinite(value)) values.push(value);
+    });
+    if (values.length < 4) return fixedBands();
+
+    values.sort((a, b) => a - b);
+    const q = p => quantile(values, p);
+    const q1 = q(0.25), q2 = q(0.5), q3 = q(0.75);
+    const fmt = v => isFinite(v) ? (percent ? v.toFixed(2) + "%" : nf.format(Math.round(v))) : "—";
+
+    if (!percent) {
+      // overdue: relative growth compared with each district's own overdue book
+      const [low, high] = [q(0.34), q(0.67)];
+      return [
+        { color: OVERDUE_RANK_COLORS.best, label: `কম বেড়েছে / কমেছে (নিচের ১/৩)`, min: -Infinity, max: low, tone: "good" },
+        { color: OVERDUE_RANK_COLORS.warn, label: `মাঝারি বৃদ্ধি (${fmt(low)} – ${fmt(high)})`, min: low, max: high, tone: "warn" },
+        { color: OVERDUE_RANK_COLORS.bad, label: `সবচেয়ে বেশি বৃদ্ধি (> ${fmt(high)})`, min: high, max: Infinity, tone: "bad" }
+      ];
+    }
+
+    return [
+      { color: RANK_COLORS.bad, label: `সবচেয়ে দুর্বল ২৫% (≤ ${fmt(q1)})`, min: -Infinity, max: q1, tone: "bad" },
+      { color: RANK_COLORS.warn, label: `২৫–৫০% (${fmt(q1)} – ${fmt(q2)})`, min: q1, max: q2, tone: "warn" },
+      { color: RANK_COLORS.good, label: `৫০–৭৫% (${fmt(q2)} – ${fmt(q3)})`, min: q2, max: q3, tone: "ok" },
+      { color: RANK_COLORS.best, label: `সেরা ২৫% (> ${fmt(q3)})`, min: q3, max: Infinity, tone: "good" }
+    ];
+  }
+
+  /** Linear-interpolated percentile of a sorted numeric array. */
+  function quantile(sorted, p) {
+    if (!sorted.length) return null;
+    const index = (sorted.length - 1) * p;
+    const lower = Math.floor(index);
+    const upper = Math.ceil(index);
+    if (lower === upper) return sorted[lower];
+    return sorted[lower] + (sorted[upper] - sorted[lower]) * (index - lower);
   }
 
   function colorFor(value) {
-    if (value === null || value === undefined) return NO_DATA_COLOR;
-    if (state.metric === "overdueChange") {
-      return value <= 0 ? OVERDUE_BANDS[0].color : OVERDUE_BANDS[1].color;
-    }
-    const band = PERCENT_BANDS.find(b => value >= b.min && value < b.max);
+    if (value === null || value === undefined || isNaN(value)) return NO_DATA_COLOR;
+    const band = bands().find(b => value >= b.min && value < b.max);
     return band ? band.color : NO_DATA_COLOR;
+  }
+
+  function toneFor(value) {
+    if (value === null || value === undefined || isNaN(value)) return "";
+    const band = bands().find(b => value >= b.min && value < b.max);
+    return band ? (band.tone || "") : "";
   }
 
   function setMetric(metric) {
@@ -501,6 +607,7 @@ const App = (() => {
       tab.classList.toggle("active", tab.dataset.metric === metric);
       tab.setAttribute("aria-selected", String(tab.dataset.metric === metric));
     });
+    bandCache = { key: null, bands: [] };
     renderKpis();
     renderLegend();
     renderMapSelection();
@@ -512,17 +619,41 @@ const App = (() => {
 
   function formatPercent(value) {
     if (value === null || value === undefined || isNaN(value)) return "—";
-    return value.toFixed(1) + "%";
+    return value.toFixed(2) + "%";
   }
 
-  function formatAmount(value) {
+  function formatAmount(value, alwaysSign) {
     if (value === null || value === undefined || isNaN(value)) return "—";
     const rounded = Math.round(value);
-    return (rounded > 0 && state.metric === "overdueChange" ? "+" : "") + nf.format(rounded);
+    const sign = rounded > 0 && (alwaysSign || state.metric === "overdueChange");
+    return (sign ? "+" : "") + nf.format(rounded);
   }
 
   function formatValue(value) {
     return metricConfig().kind === "percent" ? formatPercent(value) : formatAmount(value);
+  }
+
+  /** Format any raw report column value. */
+  function columnValue(key, value) {
+    if (value === null || value === undefined || isNaN(value)) return "—";
+    if (/pct$/i.test(key) && key !== "totalCollection") return formatPercent(value);
+    if (key === "overdueChange") return formatAmount(value, true);
+    return nf.format(Math.round(value));
+  }
+
+  /** Short header for the plaza table columns. */
+  function columnShortLabel(key) {
+    return {
+      collectableQty: "Collectable",
+      collectedQty: "Collected",
+      qtyPct: "%",
+      collectableAmt: "Collectable",
+      collectedAmt: "Collected",
+      amtPct: "%",
+      prevOverdue: "Prev. Overdue",
+      runningOverdue: "Running",
+      overdueChange: "Increase/(Decr.)"
+    }[key] || key;
   }
 
   function round1(n) { return Math.round(n * 10) / 10; }
@@ -575,15 +706,37 @@ const App = (() => {
       if (!state.ready) rows.push('<span class="tt-hint">ডেটা ফাইল আপলোড করুন</span>');
     } else {
       rows.push(`<span class="tt-value">${formatValue(value)}</span>`);
-      rows.push(`<span class="tt-hint">${state.metric === "overdueChange" ? "মোট পরিবর্তন" : "জেলা-গড়"}</span>`);
+      rows.push(`<span class="tt-hint">${metricConfig().label}</span>`);
+      // the raw report columns this value was built from
+      rows.push(`<span class="tt-columns">${columnLines(stat).join("")}</span>`);
     }
     if (stat) {
-      rows.push(`<span class="tt-meta">${nf.format(stat.plazas)} প্লাজা`);
-      if (state.metric !== "collectedQty") rows.push(`Qty: ${formatPercent(stat.avgQtyPct)}`);
-      if (state.metric !== "collectableAmt") rows.push(`Amt: ${formatPercent(stat.avgAmtPct)}`);
-      rows[rows.length - 1] += "</span>";
+      const others = [];
+      if (state.metric !== "collectedQty") others.push(`Qty: ${formatPercent(metricValueFor(stat, "collectedQty"))}`);
+      if (state.metric !== "collectableAmt") others.push(`Amt: ${formatPercent(metricValueFor(stat, "collectableAmt"))}`);
+      if (state.metric !== "overdueChange" && stat.sumOverdueChange !== null) {
+        others.push(`Overdue: ${nf.format(Math.round(stat.sumOverdueChange))}`);
+      }
+      rows.push(`<span class="tt-meta">${nf.format(stat.plazas)} প্লাজা${others.length ? " • " + others.join(" • ") : ""}</span>`);
     }
     return `<strong>${escapeHtml(info.bn)} <span class="tt-en">${escapeHtml(info.en)}</span></strong>${rows.join("")}`;
+  }
+
+  function metricValueFor(stat, metric) {
+    return PlazaParser.metricValue(stat, metric);
+  }
+
+  /** Rows for the active metric's report columns, e.g. Collectable / Collected / %. */
+  function columnLines(stat) {
+    if (!stat) return [];
+    const columns = PlazaParser.metricColumns(stat, state.metric);
+    if (!columns) return [];
+    const lines = [];
+    const money = ["collectableAmt", "collectedAmt", "prevOverdue", "runningOverdue", "overdueChange"];
+    const fmt = (key, value) => money.indexOf(key) === -1 ? nf.format(Math.round(value)) : nf.format(Math.round(value));
+    lines.push(`<span class="tt-col"><em>${escapeHtml(COLUMN_LABELS[columns.base.key] || columns.base.key)}</em><b>${fmt(columns.base.key, columns.base.value)}</b></span>`);
+    lines.push(`<span class="tt-col"><em>${escapeHtml(COLUMN_LABELS[columns.collected.key] || columns.collected.key)}</em><b>${fmt(columns.collected.key, columns.collected.value)}</b></span>`);
+    return lines;
   }
 
   function selectDistrict(id) {
@@ -628,7 +781,12 @@ const App = (() => {
     renderMapSelection();
     renderList();
     const hint = document.getElementById("metricHint");
-    if (hint) hint.textContent = metricConfig().hint;
+    if (hint) {
+      const scaleNote = state.scale === "fixed"
+        ? " • রঙ: নির্দিষ্ট থ্রেশহোল্ড"
+        : " • রঙ: তুলনামূলক (চারটি ভাগে ভাগ করা)";
+      hint.textContent = metricConfig().hint + scaleNote;
+    }
   }
 
   function renderMapSelection() {
@@ -682,7 +840,7 @@ const App = (() => {
 
     const national = state.ready ? PlazaParser.nationalMetric(state.entries, state.metric) : null;
     cards.push({
-      label: state.metric === "overdueChange" ? "মোট Overdue পরিবর্তন" : "জাতীয় গড় (প্লাজা-ভিত্তিক)",
+      label: state.metric === "overdueChange" ? "মোট Overdue পরিবর্তন" : "জাতীয় হার (সব প্লাজা)",
       value: national === null ? "—" : formatCompact(national),
       sub: metricConfig().label,
       tone: national === null ? "" : (state.metric === "overdueChange"
@@ -867,24 +1025,50 @@ const App = (() => {
       ? `${info.en} • ${nf.format(stat.plazas)} প্লাজা`
       : `${info.en} • কোনো প্লাজা ডেটা নেই`;
 
-    const stats = [
-      { label: metricConfig().label, value: formatValue(metricValue(shape)), primary: true },
-      { label: "গড় Qty %", value: formatPercent(stat ? stat.avgQtyPct : null) },
-      { label: "গড় Amt %", value: formatPercent(stat ? stat.avgAmtPct : null) },
-      { label: "Overdue পরিবর্তন", value: stat && stat.sumOverdueChange !== null ? nf.format(Math.round(stat.sumOverdueChange)) : "—" }
-    ];
+    const columns = stat ? PlazaParser.metricColumns(stat, state.metric) : null;
+    const stats = [];
+    stats.push({ label: metricConfig().label, value: formatValue(metricValue(shape)), primary: true });
+    if (columns) {
+      stats.push({ label: COLUMN_LABELS[columns.base.key] || columns.base.key, value: columnValue(columns.base.key, columns.base.value) });
+      stats.push({ label: COLUMN_LABELS[columns.collected.key] || columns.collected.key, value: columnValue(columns.collected.key, columns.collected.value) });
+    }
+    if (columns && columns.pctAvg !== undefined && columns.pctAvg !== null) {
+      stats.push({ label: "প্লাজা-ভিত্তিক গড় %", value: formatPercent(columns.pctAvg) });
+    } else if (stat) {
+      stats.push({ label: "প্লাজা", value: nf.format(stat.plazas) });
+    }
+
     document.getElementById("drawerStats").innerHTML = stats.map(item => `
       <div class="drawer-stat${item.primary ? " primary" : ""}">
         <span class="drawer-stat-label">${escapeHtml(item.label)}</span>
         <span class="drawer-stat-value">${escapeHtml(item.value)}</span>
       </div>`).join("");
 
+    // the other two metric groups, in full, so the drawer mirrors the report columns
+    const groups = [
+      { keys: ["collectableQty", "collectedQty", "qtyPct"], value: stat ? metricValueFor(stat, "collectedQty") : null },
+      { keys: ["collectableAmt", "collectedAmt", "amtPct"], value: stat ? metricValueFor(stat, "collectableAmt") : null },
+      {
+        keys: ["prevOverdue", "runningOverdue", "overdueChange"],
+        value: stat ? stat.sumOverdueChange : null,
+        label: "Previous Month Overdue → Running Month Overdue"
+      }
+    ];
     const totals = stat && stat.sum ? `
       <div class="drawer-totals">
-        <div><span>Collectable Amt</span><strong>${nf.format(Math.round(stat.sum.collectableAmt))}</strong></div>
-        <div><span>Collected Amt</span><strong>${nf.format(Math.round(stat.sum.collectedAmt))}</strong></div>
-        <div><span>Collectable Qty</span><strong>${nf.format(Math.round(stat.sum.collectableQty))}</strong></div>
-        <div><span>Collected Qty</span><strong>${nf.format(Math.round(stat.sum.collectedQty))}</strong></div>
+        ${groups.map(group => `
+          <div class="drawer-total-row">
+            <span class="drawer-total-value">${escapeHtml(columnValue(group.keys[2], group.value))}</span>
+            <span class="drawer-total-keys">${escapeHtml(group.label || group.keys.map(key => COLUMN_LABELS[key]).join(" + "))}</span>
+          </div>`).join("")}
+        <div class="drawer-total-row">
+          <span class="drawer-total-value">${nf.format(stat.plazas)}</span>
+          <span class="drawer-total-keys">প্লাজা</span>
+        </div>
+        <div class="drawer-total-row">
+          <span class="drawer-total-value">${columnValue("totalCollection", stat.sum.totalCollection)}</span>
+          <span class="drawer-total-keys">${escapeHtml(COLUMN_LABELS.totalCollection || "Total Collection (Collected + Advance)")}</span>
+        </div>
       </div>` : "";
 
     const listEl = document.getElementById("drawerList");
@@ -893,23 +1077,30 @@ const App = (() => {
       listTitle.textContent = "প্লাজা তালিকা";
       listEl.innerHTML = '<div class="list-empty">এই জেলার জন্য কোনো প্লাজা ডেটা পাওয়া যায়নি</div>';
     } else {
-      const key = state.metric === "overdueChange" ? "overdueChange"
-        : state.metric === "collectableAmt" ? "amtPct" : "qtyPct";
+      const metricColumns = METRICS[state.metric].columns;
       const sorted = stat.list.slice().sort((a, b) => {
-        const av = a.data[key];
-        const bv = b.data[key];
+        const av = a.data[metricColumns[2]];
+        const bv = b.data[metricColumns[2]];
         if (av === null) return 1;
         if (bv === null) return -1;
         return state.metric === "overdueChange" ? av - bv : bv - av;
       });
+      const isPercent = metricConfig().kind === "percent";
       listTitle.textContent = `প্লাজা তালিকা (${nf.format(sorted.length)})`;
-      listEl.innerHTML = sorted.map(entry => `
+      listEl.innerHTML = `
+        <div class="drawer-table-head">
+          <span>প্লাজা</span>
+          ${metricColumns.map(key => `<span>${escapeHtml(columnShortLabel(key))}</span>`).join("")}
+        </div>` + sorted.map(entry => `
         <div class="drawer-row">
           <span class="drawer-row-main">
             <span class="drawer-row-name">${escapeHtml(entry.plaza.replace(/^Walton Plaza-/, ""))}</span>
             <span class="drawer-row-meta">${escapeHtml(entry.area || entry.division || "")}</span>
           </span>
-          <span class="drawer-row-value${entry.data[key] === null ? " dim" : ""}">${formatValue(entry.data[key])}</span>
+          ${metricColumns.map(key => `
+            <span class="drawer-cell${entry.data[key] === null ? " dim" : ""}${key === metricColumns[2] ? " strong" : ""}">
+              ${key === metricColumns[2] ? formatValue(entry.data[key]) : columnValue(key, entry.data[key])}
+            </span>`).join("")}
         </div>`).join("");
     }
     const totalsHost = document.getElementById("drawerTotals");
@@ -950,35 +1141,42 @@ const App = (() => {
         const shape = feature.properties.shapeName;
         const stat = state.stats[shape];
         const info = bdDistrictInfo(shape);
+        const sum = stat ? stat.sum : null;
         return {
           district: info.en,
           districtBn: info.bn,
           plazas: stat ? stat.plazas : 0,
-          avgQtyPct: stat ? stat.avgQtyPct : null,
-          avgAmtPct: stat ? stat.avgAmtPct : null,
-          overdueChange: stat ? stat.sumOverdueChange : null,
-          collectableAmt: stat ? stat.sum.collectableAmt : 0,
-          collectedAmt: stat ? stat.sum.collectedAmt : 0
+          collectableQty: sum ? sum.collectableQty : null,
+          collectedQty: sum ? sum.collectedQty : null,
+          qtyPct: stat ? metricValueFor(stat, "collectedQty") : null,
+          collectableAmt: sum ? sum.collectableAmt : null,
+          collectedAmt: sum ? sum.collectedAmt : null,
+          amtPct: stat ? metricValueFor(stat, "collectableAmt") : null,
+          prevOverdue: sum ? sum.prevOverdue : null,
+          runningOverdue: sum ? sum.runningOverdue : null,
+          overdueChange: stat ? stat.sumOverdueChange : null
         };
       })
       .sort((a, b) => a.district.localeCompare(b.district));
   }
 
   function exportCsv() {
-    const header = ["District", "District (BN)", "Plazas", "Avg Collected Qty (%)", "Avg Collected Amt (%)",
-      "Overdue Change", "Collectable Amt", "Collected Amt"];
+    const header = ["District", "District (BN)", "Plazas",
+      "Collectable Acc. Qty.", "Collected Acc. Qty.", "Collectable Vs. Collected Acc Qty (%)",
+      "Collectable Amt.", "Collected Amt.", "Collectable Vs. Collected Amt. (%)",
+      "Previous Month Overdue", "Running Month Overdue", "Overdue Increase/(Decrease)"];
+    const numeric = ["plazas", "collectableQty", "collectedQty", "qtyPct", "collectableAmt", "collectedAmt",
+      "amtPct", "prevOverdue", "runningOverdue", "overdueChange"];
     const lines = [header.join(",")];
     exportRows().forEach(row => {
       lines.push([
         quote(row.district),
-        quote(row.districtBn),
-        row.plazas,
-        row.avgQtyPct === null ? "" : row.avgQtyPct.toFixed(2),
-        row.avgAmtPct === null ? "" : row.avgAmtPct.toFixed(2),
-        row.overdueChange === null ? "" : Math.round(row.overdueChange),
-        Math.round(row.collectableAmt),
-        Math.round(row.collectedAmt)
-      ].join(","));
+        quote(row.districtBn)
+      ].concat(numeric.map(key => {
+        const value = row[key];
+        if (value === null || value === undefined) return "";
+        return /pct$/i.test(key) ? value.toFixed(2) : String(Math.round(value));
+      })).join(","));
     });
     download(new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" }),
       `plaza-district-summary-${stamp()}.csv`);

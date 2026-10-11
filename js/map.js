@@ -26,6 +26,7 @@ const SVGMap = (() => {
   let hoverId = null;
   let labelsVisible = true;
   let accent = "#38bdf8";
+  let plainRender = false;
 
   /* ------------------------------------------------------------------ setup */
 
@@ -193,12 +194,14 @@ const SVGMap = (() => {
 
   /** Re-colour every region from current state (no DOM rebuild -> animated fills). */
   function refresh() {
+    const activeSelected = plainRender ? null : selectedId;
+    const activeHover = plainRender ? null : hoverId;
     items.forEach(({ id, path, feature }) => {
       const style = Object.assign({}, hooks.getStyle(feature, id));
-      const isSelected = selectedId === id;
-      const isHover = hoverId === id;
+      const isSelected = activeSelected === id;
+      const isHover = activeHover === id;
 
-      if (selectedId) {
+      if (activeSelected) {
         style.fillOpacity = isSelected ? 1 : Math.min(style.fillOpacity, 0.32);
         path.classList.toggle("dimmed", !isSelected);
       } else {
@@ -223,7 +226,7 @@ const SVGMap = (() => {
     labelGroup.classList.toggle("labels-off", !labelsVisible);
     Array.prototype.forEach.call(labelGroup.children, label => {
       const id = label.dataset.id;
-      const active = id === selectedId || id === hoverId;
+      const active = !plainRender && (id === selectedId || id === hoverId);
       label.classList.toggle("active", active);
       const tiny = label.dataset.tiny === "1";
       label.style.display = ((!labelsVisible && !active) || (tiny && !active)) ? "none" : "";
@@ -391,11 +394,26 @@ const SVGMap = (() => {
    */
   function buildExportSVG(options) {
     const opts = options || {};
+    // render a neutral map first (no selection dimming / hover highlight)
+    plainRender = true;
+    refresh();
+    try {
+      return buildExportSVGInternal(opts);
+    } finally {
+      plainRender = false;
+      refresh();
+    }
+  }
+
+  function buildExportSVGInternal(opts) {
     const legend = opts.legend || [];
-    const legendCols = legend.length > 4 ? 2 : 1;
+    const legendCols = legend.length > 4 ? 2 : (legend.some(item => item.label.length > 26) ? 2 : 1);
     const legendRows = Math.ceil(legend.length / legendCols) || 1;
     const footerH = 26 + legendRows * LEGEND_ROW + 18;
     const totalH = HEADER_H + height + footerH;
+    const legendColW = width / legendCols;
+    // long adaptive labels ("সবচেয়ে দুর্বল ২৫% (≤ 16.93%)") must stay inside their column
+    const legendChars = Math.max(12, Math.floor((legendColW - 68) / 7.6));
 
     const out = document.createElementNS(NS, "svg");
     out.setAttribute("xmlns", NS);
@@ -429,6 +447,17 @@ const SVGMap = (() => {
     subtitle.textContent = opts.subtitle || "";
     out.appendChild(subtitle);
 
+    if (opts.note) {
+      const note = document.createElementNS(NS, "text");
+      note.setAttribute("x", width - 34);
+      note.setAttribute("y", -92);
+      note.setAttribute("text-anchor", "end");
+      note.setAttribute("fill", opts.muted || "#94a3b8");
+      note.setAttribute("font-size", "15");
+      note.textContent = clip(opts.note, 40);
+      out.appendChild(note);
+    }
+
     // copy the live map (paths + labels) with resolved inline styles
     const live = svg.querySelectorAll("path, text");
     const group = document.createElementNS(NS, "g");
@@ -457,7 +486,7 @@ const SVGMap = (() => {
 
     // legend
     const legendTop = height + 30;
-    const colW = width / legendCols;
+    const colW = legendColW;
     legend.forEach((item, i) => {
       const col = i % legendCols;
       const row = Math.floor(i / legendCols);
@@ -478,26 +507,22 @@ const SVGMap = (() => {
       text.setAttribute("y", y);
       text.setAttribute("fill", opts.text || "#f1f5f9");
       text.setAttribute("font-size", "15");
-      text.textContent = item.label;
+      text.textContent = clip(item.label, legendChars);
       out.appendChild(text);
     });
-
-    if (opts.note) {
-      const note = document.createElementNS(NS, "text");
-      note.setAttribute("x", width - 34);
-      note.setAttribute("y", legendTop);
-      note.setAttribute("text-anchor", "end");
-      note.setAttribute("fill", opts.muted || "#94a3b8");
-      note.setAttribute("font-size", "14");
-      note.textContent = opts.note;
-      out.appendChild(note);
-    }
 
     return {
       markup: new XMLSerializer().serializeToString(out),
       width: width,
       height: totalH
     };
+  }
+
+  /** Clip a label to a character budget (keeps exports tidy, no measuring needed). */
+  function clip(text, maxChars) {
+    const value = String(text === null || text === undefined ? "" : text);
+    if (value.length <= maxChars) return value;
+    return value.slice(0, Math.max(1, maxChars - 1)).trim() + "…";
   }
 
   function getSize() {

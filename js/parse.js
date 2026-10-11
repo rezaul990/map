@@ -44,9 +44,24 @@ const PlazaParser = (() => {
   ];
 
   const NUMERIC_FIELDS = [
-    "collectableQty", "collectedQty", "qtyPct", "collectableAmt", "collectedAmt",
-    "advance", "totalCollection", "prevOverdue", "runningOverdue", "overdueChange"
+    "collectableQty", "collectedQty", "qtyPct",
+    "collectableAmt", "collectedAmt", "amtPct",
+    "advance", "totalCollection",
+    "prevOverdue", "runningOverdue", "overdueChange"
   ];
+
+  /**
+   * The three report metrics and the raw columns behind each one:
+   *
+   *   Qty     -> Collectable Acc. Qty. / Collected Acc. Qty. / Collectable Vs. Collected Acc Qty (%)
+   *   Amt     -> Collectable Amt.      / Collected Amt.      / Collectable Vs. Collected Amt (%)
+   *   Overdue -> Previous Month Overdue / Running Month Overdue / Overdue Increase/(Decrease)
+   */
+  const METRIC_GROUPS = {
+    collectedQty: { base: "collectableQty", collected: "collectedQty", pct: "qtyPct" },
+    collectableAmt: { base: "collectableAmt", collected: "collectedAmt", pct: "amtPct" },
+    overdueChange: { base: "prevOverdue", collected: "runningOverdue", change: "overdueChange" }
+  };
 
   function normKey(value) {
     return String(value === null || value === undefined ? "" : value)
@@ -93,7 +108,9 @@ const PlazaParser = (() => {
    */
   function detectColumns(rows, headerRowIndex) {
     const headerRow = rows[headerRowIndex] || [];
-    const headers = headerRow.map(h => String(h === null || h === undefined ? "" : h).toLowerCase().trim());
+    // collapse padding and the line breaks real reports use inside header cells
+    const headers = headerRow.map(h => String(h === null || h === undefined ? "" : h)
+      .toLowerCase().replace(/\s+/g, " ").trim());
     const sample = rows.slice(headerRowIndex + 1, headerRowIndex + 41);
 
     const stats = headers.map((header, index) => {
@@ -291,18 +308,20 @@ const PlazaParser = (() => {
         qtyPct: [],
         amtPct: [],
         overdueChange: [],
-        sum: { collectableQty: 0, collectedQty: 0, collectableAmt: 0, collectedAmt: 0, overdueChange: 0 }
+        sum: {
+          collectableQty: 0, collectedQty: 0,
+          collectableAmt: 0, collectedAmt: 0,
+          advance: 0, totalCollection: 0,
+          prevOverdue: 0, runningOverdue: 0, overdueChange: 0
+        }
       });
       s.plazas++;
       s.list.push(entry);
       if (entry.data.qtyPct !== null) s.qtyPct.push(entry.data.qtyPct);
       if (entry.data.amtPct !== null) s.amtPct.push(entry.data.amtPct);
-      if (entry.data.overdueChange !== null) {
-        s.overdueChange.push(entry.data.overdueChange);
-        s.sum.overdueChange += entry.data.overdueChange;
-      }
-      ["collectableQty", "collectedQty", "collectableAmt", "collectedAmt"].forEach(key => {
-        if (entry.data[key] !== null) s.sum[key] += entry.data[key];
+      if (entry.data.overdueChange !== null) s.overdueChange.push(entry.data.overdueChange);
+      Object.keys(s.sum).forEach(key => {
+        if (entry.data[key] !== null && entry.data[key] !== undefined) s.sum[key] += entry.data[key];
       });
     });
 
@@ -311,6 +330,10 @@ const PlazaParser = (() => {
       s.avgQtyPct = avg(s.qtyPct);
       s.avgAmtPct = avg(s.amtPct);
       s.sumOverdueChange = s.overdueChange.length ? s.sum.overdueChange : null;
+      // district level "%": collected / collectable across the whole district
+      // (falls back to the average of the per-plaza percentages when totals are missing)
+      s.ratioQtyPct = ratio(s.sum.collectedQty, s.sum.collectableQty, s.avgQtyPct);
+      s.ratioAmtPct = ratio(s.sum.collectedAmt, s.sum.collectableAmt, s.avgAmtPct);
       delete s.qtyPct;
       delete s.amtPct;
       delete s.overdueChange;
@@ -319,18 +342,44 @@ const PlazaParser = (() => {
     return { stats, unmatched: Array.from(unmatched) };
   }
 
+  function ratio(collected, collectable, fallback) {
+    if (collected > 0 && collectable > 0) return (collected / collectable) * 100;
+    return fallback === undefined ? null : fallback;
+  }
+
   function avg(arr) {
     if (!arr || !arr.length) return null;
     return arr.reduce((a, b) => a + b, 0) / arr.length;
   }
 
-  /** Value of the active metric for one district (null when there is no data). */
+  /**
+   * Value of the active metric for one district (null when there is no data).
+   * Percentage metrics are collected/collectable across the district; the plain
+   * average of the per-plaza percentages is kept separately (`avgQtyPct`/`avgAmtPct`).
+   */
   function metricValue(stat, metric) {
     if (!stat) return null;
-    if (metric === "collectedQty") return stat.avgQtyPct;
-    if (metric === "collectableAmt") return stat.avgAmtPct;
+    if (metric === "collectedQty") return stat.ratioQtyPct;
+    if (metric === "collectableAmt") return stat.ratioAmtPct;
     if (metric === "overdueChange") return stat.sumOverdueChange;
     return null;
+  }
+
+  /** Raw column values behind a metric for one district, ready for the UI. */
+  function metricColumns(stat, metric) {
+    const group = METRIC_GROUPS[metric];
+    if (!group || !stat) return null;
+    const out = {
+      base: { key: group.base, value: stat.sum[group.base] },
+      collected: { key: group.collected, value: stat.sum[group.collected] }
+    };
+    if (group.pct) {
+      out.pct = { key: group.pct, value: metricValue(stat, metric) };
+      out.pctAvg = stat[metric === "collectableAmt" ? "avgAmtPct" : "avgQtyPct"];
+    } else {
+      out.change = { key: group.change, value: metricValue(stat, metric) };
+    }
+    return out;
   }
 
   /** National aggregate across all districts/plazas for the active metric. */
@@ -343,20 +392,35 @@ const PlazaParser = (() => {
       });
       return seen ? total : null;
     }
-    const key = metric === "collectableAmt" ? "amtPct" : "qtyPct";
+    const group = METRIC_GROUPS[metric];
+    let collected = 0;
+    let base = 0;
+    let seen = false;
+    entries.forEach(e => {
+      const c = e.data[group.collected];
+      const b = e.data[group.base];
+      if (c !== null && b !== null && c !== undefined && b !== undefined) {
+        collected += c;
+        base += b;
+        seen = true;
+      }
+    });
+    if (seen && base > 0) return (collected / base) * 100;
     const values = [];
-    entries.forEach(e => { if (e.data[key] !== null) values.push(e.data[key]); });
+    entries.forEach(e => { if (e.data[group.pct] !== null) values.push(e.data[group.pct]); });
     return avg(values);
   }
 
   return {
     LEGACY_INDEX,
+    METRIC_GROUPS,
     parseRows,
     detectColumns,
     detectPercentScale,
     buildPlazaIndex,
     buildStats,
     metricValue,
+    metricColumns,
     nationalMetric,
     toNum,
     normKey

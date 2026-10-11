@@ -65,7 +65,14 @@
       <button class="metric-tab" role="tab" aria-selected="false" data-metric="collectableAmt">Collectable Amt.</button>
       <button class="metric-tab" role="tab" aria-selected="false" data-metric="overdueChange">Overdue Increase/(Decrease)</button>
     </nav>
-    <p class="metric-hint" id="metricHint">প্রতিটি প্লাজার “Collectable Vs. Collected Acc Qty (%)” এর জেলা-ভিত্তিক গড়</p>
+    <p class="metric-hint" id="metricHint"></p>
+    <label class="scale-picker">
+      <span>রঙের স্কেল</span>
+      <select id="scaleSelect" class="filter-select compact" aria-label="রঙের স্কেল">
+        <option value="relative">তুলনামূলক (ডেটা অনুযায়ী ভাগ)</option>
+        <option value="fixed">নির্দিষ্ট (৭০ / ৮০ / ৯০%)</option>
+      </select>
+    </label>
   </div>
 
   <main class="main">

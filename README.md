@@ -22,21 +22,39 @@ drill-down, and downloadable summaries.
 - The last dataset is kept in `localStorage`, so a reload keeps your data (and there is a
   **ডেমো ডেটা** button to explore the app without a report file).
 
-**Visualisation**
+**Metrics and the report columns behind them**
 
-- Three metrics: `Collected Acc Qty (%)`, `Collectable Vs. Collected Amt (%)`,
-  `Overdue Increase/(Decrease)`.
-- Per-district aggregation: average % for the two percentage metrics, net change for overdue.
+| Metric | Columns used from the report |
+| --- | --- |
+| Collectable Vs. Collected Acc Qty (%) | `Collectable Acc. Qty.` · `Collected Acc. Qty.` · `Collectable Vs. Collected Acc Qty (%)` |
+| Collectable Vs. Collected Amt. (%) | `Collectable Amt.` · `Collected Amt.` · `Collectable Vs. Collected Amt. (%)` |
+| Overdue Increase/(Decrease) | `Previous Month Overdue` · `Running Month Overdue` · `Overdue Increase/(Decrease)` |
+
+A district's percentage is `Σ collected ÷ Σ collectable` across its plazas (the same way the
+report totals a region); the plain average of the plaza percentages is shown next to it.
+Overdue is the sum of the change column, with the previous and running overdue totals shown
+alongside so growth can be judged against the district's overdue book.
+
+**Colour scale**
+
+- **তুলনামূলক (default)** – quartiles of the districts present in the data, so reports whose
+  collection rates sit far below 70% (e.g. 5–35%) still produce a readable map instead of a
+  solid red country. Overdue is split into "least / medium / most growth" for the same reason.
+- **নির্দিষ্ট** – the report's own thresholds (70 / 80 / 90%) for a like-for-like view across
+  months and regions.
+
+**Visualisation**
 - Aspect-correct projection (longitude × cos(latitude)), so Bangladesh is not stretched.
-- Hover tooltips with value, plaza count and the other metrics; district labels that
-  auto-hide when a district is too small to fit text.
+- Hover tooltips show the value plus the raw report columns it came from, the plaza count
+  and the other metrics; district labels auto-hide when a district is too small for text.
 - KPI cards (plazas, district coverage, national average, best/worst district) and a
   legend showing how many districts fall in each band.
 
 **Interaction**
 
-- Click a district (on the map or in the list) to open a detail drawer: metric values,
-  amount/quantity totals, and every plaza in that district sorted by performance.
+- Click a district (on the map or in the list) to open a detail drawer: the active metric's
+  columns, a summary of all three column groups, and every plaza in that district laid out
+  like the report (plaza + the three metric columns), sorted by performance.
 - Search by English name, Bengali name or plaza name (`/` focuses the search box).
 - Sort by name, best/worst value, or plaza count; filter to a single district; reset view.
 - Keyboard accessible districts (tab + Enter/Space), `Esc` clears the selection.
@@ -45,8 +63,8 @@ drill-down, and downloadable summaries.
 **Export**
 
 - PNG snapshot of the map with title, legend and source file name (self-contained SVG
-  rendered through canvas).
-- CSV of the district summary (UTF-8 with BOM, opens correctly in Excel).
+  rendered through canvas; exports ignore the on-screen selection so they are never dimmed).
+- CSV of the district summary with every report column (UTF-8 with BOM, opens in Excel).
 - JSON with the district summary plus every plaza row — handy for other tools.
 
 ## Tech
@@ -74,8 +92,10 @@ npm install     # jsdom (dev only)
 npm test        # parser unit tests + jsdom end-to-end UI test
 ```
 
-- `tests/parser.test.js` — column detection, number coercion, percent scaling,
-  district aliases and aggregation.
+- `tests/parser.test.js` — column detection, number coercion, percent scaling, district
+  aliases, aggregation, and a set of assertions against `tests/fixtures/report-sample.js`,
+  a copy of a real "Target Hire Accounts Summary Report" (spacer columns, padded headers,
+  multi-line header cells and all).
 - `tests/e2e.test.js` — serves the app, loads it in jsdom, pushes a generated `.xlsx`
   through the real upload pipeline and asserts the UI (map, KPIs, legend, list, drawer,
   tooltips, filters, exports, persistence).
@@ -95,10 +115,10 @@ npm test        # parser unit tests + jsdom end-to-end UI test
 index.html            markup: toolbar, KPIs, sidebar, map panel, detail drawer
 css/style.css         design tokens, dark/light themes, responsive layout
 js/data.js            district names + alias resolution (pure, unit tested)
-js/parse.js           spreadsheet parsing + district aggregation (pure, unit tested)
+js/parse.js           spreadsheet parsing, metric column groups + aggregation (unit tested)
 js/map.js             SVG map: projection, labels, tooltip, hover/selection, export SVG
 js/app.js             UI state, rendering, interactions, exports, persistence
 js/plaza.js           plaza → district master data (generated)
 vendor/xlsx.full.min.js  SheetJS build
-tests/                node-based unit + e2e tests
+tests/                node-based unit + e2e tests (plus a real report fixture)
 ```

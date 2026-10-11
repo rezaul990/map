@@ -178,23 +178,53 @@ function check(name, fn) {
     assert.ok(doc.getElementById("drawer").classList.contains("open"));
     assert.ok(doc.querySelectorAll("#drawerList .drawer-row").length >= 1);
     assert.ok(doc.getElementById("drawerStats").children.length >= 4);
-    assert.ok(doc.getElementById("drawerTotals").textContent.includes("Collectable Amt"));
+    assert.ok(doc.getElementById("drawerTotals").textContent.includes("Collectable Amt."));
+    assert.strictEqual(doc.querySelectorAll("#drawerList .drawer-table-head span").length, 4, "plaza table header");
+    const cells = doc.querySelectorAll("#drawerList .drawer-row .drawer-cell");
+    assert.ok(cells.length >= 3, "plaza table cells: " + cells.length);
     assert.strictEqual(doc.querySelectorAll("#map path.map-path.selected").length, 1);
     assert.ok(doc.querySelectorAll("#map path.map-path.dimmed").length > 50);
     doc.getElementById("drawerClose").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     assert.strictEqual(doc.getElementById("drawer").classList.contains("open"), false);
   });
 
+  const legendCounts = () => Array.from(doc.querySelectorAll("#legend .legend-count")).map(el => Number(el.textContent));
+
   check("metric tabs switch legend, hint and tooltip data", () => {
     const tab = doc.querySelector('.metric-tab[data-metric="overdueChange"]');
     tab.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     assert.ok(tab.classList.contains("active"));
-    assert.strictEqual(doc.querySelectorAll("#legend .legend-item").length, 3);
-    const counts = Array.from(doc.querySelectorAll("#legend .legend-count")).map(el => Number(el.textContent));
-    assert.strictEqual(counts.reduce((a, b) => a + b, 0), 64);
+    // adaptive scale: 3 overdue bands + "no data"
+    assert.strictEqual(doc.querySelectorAll("#legend .legend-item").length, 4);
+    assert.strictEqual(legendCounts().reduce((a, b) => a + b, 0), 64);
     assert.ok(doc.getElementById("metricHint").textContent.length > 10);
+    assert.ok(doc.getElementById("metricHint").textContent.includes("তুলনামূলক"));
     doc.querySelector('.metric-tab[data-metric="collectedQty"]').dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    // adaptive scale: 4 percentage bands + "no data"
     assert.strictEqual(doc.querySelectorAll("#legend .legend-item").length, 5);
+    assert.strictEqual(App.internals.state.metric, "collectedQty");
+  });
+
+  check("both percentage metrics carry data (regression: amtPct was not parsed)", () => {
+    const stats = App.internals.state.stats;
+    const withQty = Object.keys(stats).filter(shape => App.internals.state.stats[shape].ratioQtyPct !== null);
+    const withAmt = Object.keys(stats).filter(shape => App.internals.state.stats[shape].ratioAmtPct !== null);
+    assert.ok(withQty.length > 10, "qty districts: " + withQty.length);
+    assert.ok(withAmt.length > 10, "amt districts: " + withAmt.length);
+    assert.strictEqual(withQty.length, withAmt.length);
+  });
+
+  check("scale picker switches between adaptive and fixed thresholds", () => {
+    const scale = doc.getElementById("scaleSelect");
+    scale.value = "fixed";
+    scale.dispatchEvent(new window.Event("change", { bubbles: true }));
+    const labels = Array.from(doc.querySelectorAll("#legend .legend-label")).map(el => el.textContent);
+    assert.ok(labels.some(text => text.includes("70 – 79.99%")), "fixed labels: " + labels.join(" | "));
+    assert.strictEqual(legendCounts().reduce((a, b) => a + b, 0), 64);
+    scale.value = "relative";
+    scale.dispatchEvent(new window.Event("change", { bubbles: true }));
+    const adaptive = Array.from(doc.querySelectorAll("#legend .legend-label")).map(el => el.textContent);
+    assert.ok(adaptive.some(text => text.includes("২৫%")), "adaptive labels: " + adaptive.join(" | "));
   });
 
   check("search matches English, Bengali and plaza names", () => {
@@ -256,6 +286,8 @@ function check(name, fn) {
     assert.strictEqual(tooltip.style.opacity, "1");
     assert.ok(tooltip.textContent.includes("ঢাকা"), "tooltip text: " + tooltip.textContent);
     assert.ok(/[\d.]+%/.test(tooltip.textContent), "tooltip value: " + tooltip.textContent);
+    assert.ok(tooltip.querySelectorAll(".tt-col").length === 2, "raw report columns in tooltip");
+    assert.ok(tooltip.textContent.includes("Collected"), "column labels: " + tooltip.textContent);
     path.dispatchEvent(new window.MouseEvent("pointerleave", { bubbles: true }));
     assert.strictEqual(tooltip.style.opacity, "0");
   });
@@ -264,6 +296,21 @@ function check(name, fn) {
     assert.ok(doc.querySelector(".map-container .map-legend #legend"), "legend inside the map panel");
     assert.ok(doc.querySelector(".sidebar #locationList"), "list inside the sidebar");
     assert.ok(doc.querySelector("#map .map-svg svg"), "svg mounted in its own layer");
+  });
+
+  check("exports stay neutral while a district is selected on screen", () => {
+    const target = doc.querySelector('#locationList .location-item[data-shape="Dhaka"]');
+    target.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.ok(doc.querySelectorAll("#map path.map-path.dimmed").length > 50, "screen is dimmed");
+    const exported = window.eval(`SVGMap.buildExportSVG({ title: "t", legend: [], background: "#131c2e" })`);
+    const opacities = (exported.markup.match(/fill-opacity="([\d.]+)"/g) || [])
+      .map(value => parseFloat(value.split('"')[1]))
+      .filter(value => value > 0 && value !== 1);
+    assert.ok(opacities.length > 50, "regions exported: " + opacities.length);
+    assert.ok(Math.min.apply(null, opacities) >= 0.4, "no dimmed region in the export: " + Math.min.apply(null, opacities));
+    assert.ok(!/stroke="#38bdf8"/.test(exported.markup), "no selection outline in the export");
+    doc.getElementById("drawerClose").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(doc.querySelectorAll("#map path.map-path.dimmed").length, 0, "screen restored");
   });
 
   check("export SVG is self-contained and carries legend + labels", () => {
@@ -293,6 +340,8 @@ function check(name, fn) {
     check("CSV export writes a header plus one row per district", () => {
       assert.strictEqual(window.__blobs.length, before + 1);
       assert.ok(/^\uFEFF?District,District \(BN\)/.test(csv), "header: " + JSON.stringify(csv.slice(0, 30)));
+      assert.ok(csv.includes("Collectable Vs. Collected Amt. (%)") || csv.includes("Collectable Vs. Collected Amt. (%)"));
+      assert.ok(csv.includes("Previous Month Overdue"));
       assert.strictEqual(csv.trim().split(/\r?\n/).length, 65);
       assert.ok(csv.includes("ঢাকা"));
     });
