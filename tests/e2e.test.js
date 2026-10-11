@@ -71,14 +71,39 @@ function buildWorkbook() {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const results = [];
+const pending = [];
 function check(name, fn) {
+  const entry = { name, ok: true, message: "" };
+  results.push(entry);
   try {
-    fn();
-    results.push("  ok   " + name);
+    const outcome = fn();
+    if (outcome && typeof outcome.then === "function") {
+      // async check: keep the order, settle it before the summary is printed
+      pending.push(outcome.then(
+        () => entry,
+        err => {
+          entry.ok = false;
+          entry.message = err.message;
+          process.exitCode = 1;
+          return entry;
+        }
+      ));
+    }
   } catch (err) {
-    results.push("  FAIL " + name + " -> " + err.message);
+    entry.ok = false;
+    entry.message = err.message;
     process.exitCode = 1;
   }
+  return entry;
+}
+
+function report() {
+  const lines = results.map(entry => entry.ok
+    ? "  ok   " + entry.name
+    : "  FAIL " + entry.name + " -> " + entry.message);
+  console.log(lines.join("\n"));
+  const passed = results.filter(entry => entry.ok).length;
+  console.log(`\n${passed}/${results.length} e2e checks passed`);
 }
 
 (async () => {
@@ -96,8 +121,21 @@ function check(name, fn) {
     virtualConsole,
     beforeParse(window) {
       window.fetch = async url => {
-        if (String(url).includes("bangladesh.geojson")) return { ok: true, status: 200, json: async () => geo };
-        throw new Error("unexpected fetch " + url);
+        const target = String(url);
+        if (target.includes("bangladesh.geojson")) {
+          return { ok: true, status: 200, json: async () => geo };
+        }
+        const file = path.join(ROOT, target.replace(/^https?:\/\/[^/]+\//, "").replace(/^\/+/, ""));
+        if (!fs.existsSync(file)) throw new Error("unexpected fetch " + target);
+        const buffer = fs.readFileSync(file);
+        return {
+          ok: true,
+          status: 200,
+          async text() { return buffer.toString("utf8"); },
+          async arrayBuffer() {
+            return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+          }
+        };
       };
       window.confirm = () => true;
       window.__blobs = [];
@@ -110,11 +148,13 @@ function check(name, fn) {
   const doc = window.document;
   await sleep(800);
   const App = window.eval("App"); // declared with const in a classic script
-  const blobText = index => new Promise(resolve => {
+  const blobText = index => new Promise((resolve, reject) => {
     const blob = window.__blobs[index];
-    if (blob && typeof blob.text === "function") { blob.text().then(resolve); return; }
-    window.eval(`(function(){var fr=new FileReader();fr.onload=function(){window.__csv=fr.result};fr.readAsText(window.__blobs[${index}]);})()`);
-    setTimeout(() => resolve(window.__csv), 50);
+    if (!blob) { reject(new Error("no exported blob at index " + index)); return; }
+    const reader = new window.FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error || new Error("could not read the blob"));
+    reader.readAsText(blob);
   });
 
   /* ---------------------------------------------------------------- checks */
@@ -296,6 +336,18 @@ function check(name, fn) {
     assert.ok(doc.querySelector(".map-container .map-legend #legend"), "legend inside the map panel");
     assert.ok(doc.querySelector(".sidebar #locationList"), "list inside the sidebar");
     assert.ok(doc.querySelector("#map .map-svg svg"), "svg mounted in its own layer");
+    const title = doc.getElementById("legendMetric");
+    assert.ok(/Collected Acc Qty|Collectable/.test(title.textContent), "legend names its metric: " + title.textContent);
+    const svg = doc.querySelector("#map .map-svg svg");
+    assert.ok(Number(svg.getAttribute("width")) > 100 && Number(svg.getAttribute("height")) > 100,
+      "svg has an intrinsic size for aspect-based layout");
+  });
+
+  check("zoom controls sit inside the map panel", () => {
+    const controls = doc.querySelector(".map-container .map-zoom");
+    assert.ok(controls, "zoom controls in the map panel");
+    ["zoomIn", "zoomOut", "zoomReset"].forEach(id => assert.ok(controls.querySelector("#" + id), id));
+    assert.strictEqual(controls.querySelectorAll(".zoom-btn").length, 3);
   });
 
   check("exports stay neutral while a district is selected on screen", () => {
@@ -325,6 +377,98 @@ function check(name, fn) {
     assert.ok(exported.markup.includes('font-size'), "inline label typography");
     assert.ok(exported.markup.includes('fill="#'), "explicit fills");
     assert.ok(exported.height > 900 && exported.width === 800, exported.width + "x" + exported.height);
+  });
+
+  check("zoom buttons, keyboard and readout drive the map transform", () => {
+    const level = doc.getElementById("zoomLevel");
+    const reset = doc.getElementById("zoomReset");
+    const group = doc.querySelector("#map .map-paths");
+    assert.strictEqual(level.textContent, "100%");
+    assert.strictEqual(reset.disabled, true, "reset disabled at 1x");
+
+    doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.ok(App.internals.getZoom() > 1.4, "zoom in: " + App.internals.getZoom());
+    assert.match(group.getAttribute("transform"), /scale\(1\.[45]/, "paths are scaled");
+    assert.strictEqual(level.textContent, "150%");
+    assert.strictEqual(reset.disabled, false);
+
+    doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    doc.getElementById("zoomOut").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.ok(Math.abs(App.internals.getZoom() - 1.5) < 0.01, "zoom out returns to 1.5x: " + App.internals.getZoom());
+
+    doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "+", bubbles: true }));
+    assert.ok(App.internals.getZoom() > 1.5, "keyboard + zooms in");
+    doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "0", bubbles: true }));
+    assert.strictEqual(App.internals.getZoom(), 1, "keyboard 0 resets");
+    assert.strictEqual(level.textContent, "100%");
+    assert.strictEqual(reset.disabled, true);
+  });
+
+  check("district labels counter-scale so they stay readable when zoomed", () => {
+    const label = doc.querySelector('.district-label[data-id="Dhaka"]');
+    assert.strictEqual(label.getAttribute("transform"), "translate(0 0) scale(1.0000)".replace("0 0", label.getAttribute("transform").match(/translate\(([^)]+)\)/)[1]));
+    doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const scale = Number(label.getAttribute("transform").match(/scale\(([\d.]+)\)/)[1]);
+    assert.ok(scale < 0.8 && scale > 0.5, "label counter-scaled: " + scale);
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(Number(label.getAttribute("transform").match(/scale\(([\d.]+)\)/)[1]), 1);
+  });
+
+  check("zoom-to-district frames that district", () => {
+    App.internals.zoomToShape("Rangamati");
+    const transform = doc.querySelector("#map .map-paths").getAttribute("transform");
+    assert.ok(App.internals.getZoom() > 2, "framed zoom: " + App.internals.getZoom());
+    assert.ok(/translate\(-\d/.test(transform), "panned to the district: " + transform);
+    App.internals.zoomToShape(null);
+    assert.strictEqual(App.internals.getZoom(), 1);
+  });
+
+  check("dragging pans the map and never selects a district", async () => {
+    const paths = doc.querySelector("#map .map-paths");
+    const before = { selected: App.internals.state.selected };
+    const fire = (type, x, y) => paths.dispatchEvent(new window.MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 }));
+
+    fire("pointerdown", 200, 200);
+    fire("pointermove", 260, 240);
+    fire("pointerup", 260, 240);
+    const transform = paths.getAttribute("transform");
+    assert.match(transform, /translate\(6[01]/, "panned: " + transform);
+    assert.strictEqual(App.internals.state.selected, before.selected, "pan did not select");
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  });
+
+  check("wheel zooms at the pointer", () => {
+    const svg = doc.querySelector("#map svg");
+    const event = new window.MouseEvent("wheel", { bubbles: true, cancelable: true, clientX: 300, clientY: 300 });
+    Object.defineProperty(event, "deltaY", { value: -240 });
+    svg.dispatchEvent(event);
+    assert.ok(App.internals.getZoom() > 1.2, "wheel zoom: " + App.internals.getZoom());
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(App.internals.getZoom(), 1);
+  });
+
+  check("exports are un-zoomed and labels drop their counter-scale", () => {
+    doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const label = doc.querySelector('.district-label[data-id="Dhaka"]');
+    assert.ok(Number(label.getAttribute("transform").match(/scale\(([\d.]+)\)/)[1]) < 0.6, "zoomed screen state");
+    const exported = window.eval(`SVGMap.buildExportSVG({ title: "t", legend: [], background: "#131c2e" })`);
+    const scales = (exported.markup.match(/scale\(([\d.]+)\)/g) || []).map(value => Number(value.match(/[\d.]+/)[0]));
+    assert.ok(scales.every(value => value >= 0.999), "no counter-scale in export: " + scales.slice(0, 4).join(","));
+    assert.ok(!/data-bx/.test(exported.markup), "internal attributes stripped");
+    assert.strictEqual(App.internals.getZoom() > 1, true, "screen keeps its zoom");
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  });
+
+  check("exported SVG embeds the Bengali fonts as data URIs", async () => {
+    const fontCss = await App.internals.embeddableFontCss();
+    assert.ok(fontCss.includes("data:font/woff2;base64,"), "inlined fonts");
+    assert.ok(/unicode-range/.test(fontCss), "subsets keep their ranges");
+    assert.ok(fontCss.includes("font-family: 'Hind Siliguri'"));
+    const exported = window.eval(`SVGMap.buildExportSVG({ title: "t", legend: [], background: "#131c2e", fontCss: ${JSON.stringify(fontCss)} })`);
+    assert.ok(exported.markup.includes("data:font/woff2;base64,"), "fonts travel inside the export");
+    assert.ok(exported.markup.indexOf("<style>") < exported.markup.indexOf("<path"), "style comes first");
+    return null;
   });
 
   check("theme toggle flips the colour scheme", () => {
@@ -372,9 +516,8 @@ function check(name, fn) {
     assert.ok(Object.keys(state.stats).length > 50, "demo districts: " + Object.keys(state.stats).length);
   });
 
-  console.log(results.join("\n"));
-  const passed = results.filter(r => r.startsWith("  ok")).length;
-  console.log(`\n${passed}/${results.length} e2e checks passed`);
+  await Promise.all(pending);
+  report();
   dom.window.close();
   server.close();
 })().catch(err => {

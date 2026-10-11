@@ -28,6 +28,15 @@ const SVGMap = (() => {
   let accent = "#38bdf8";
   let plainRender = false;
 
+  /* zoom / pan */
+  const MIN_SCALE = 1;
+  const MAX_SCALE = 10;
+  let view = { k: 1, x: 0, y: 0 };
+  let drag = null;
+  let pointers = new Map();
+  let pinch = null;
+  let dragged = false;
+
   /* ------------------------------------------------------------------ setup */
 
   function init(options) {
@@ -37,7 +46,8 @@ const SVGMap = (() => {
       getStyle: options.getStyle || (() => ({})),
       getLabel: options.getLabel || (() => ""),
       getTooltip: options.getTooltip || (() => ""),
-      onSelect: options.onSelect || (() => {})
+      onSelect: options.onSelect || (() => {}),
+      onZoom: options.onZoom || (() => {})
     };
     container.innerHTML = "";
     container.style.position = "relative";
@@ -47,8 +57,6 @@ const SVGMap = (() => {
     svg.setAttribute("role", "img");
     svg.setAttribute("aria-label", "বাংলাদেশের জেলাভিত্তিক কালেকশন ম্যাপ");
     svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
-    svg.setAttribute("width", "100%");
-    svg.setAttribute("height", "100%");
     svg.classList.add("bd-map");
     mapGroup = document.createElementNS(NS, "g");
     mapGroup.setAttribute("class", "map-paths");
@@ -68,6 +76,183 @@ const SVGMap = (() => {
       hideTooltip();
       refresh();
     });
+
+    attachInteraction();
+  }
+
+  /* ----------------------------------------------------------- zoom & pan */
+
+  function attachInteraction() {
+    svg.classList.add("map-interactive");
+
+    svg.addEventListener("pointerdown", event => {
+      if (event.button !== undefined && event.button !== 0) return;
+      pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (pointers.size === 1) {
+        dragged = false;
+        drag = { id: event.pointerId, startX: event.clientX, startY: event.clientY, view: { k: view.k, x: view.x, y: view.y } };
+      } else if (pointers.size === 2) {
+        drag = null;
+        const [a, b] = Array.from(pointers.values());
+        pinch = { distance: Math.hypot(a.x - b.x, a.y - b.y), view: { k: view.k, x: view.x, y: view.y } };
+      }
+      try { svg.setPointerCapture(event.pointerId); } catch (err) { /* jsdom / older browsers */ }
+    });
+
+    svg.addEventListener("pointermove", event => {
+      if (pointers.has(event.pointerId)) pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+      if (pinch && pointers.size >= 2) {
+        const [a, b] = Array.from(pointers.values());
+        const distance = Math.hypot(a.x - b.x, a.y - b.y);
+        if (pinch.distance > 0) {
+          const centre = toSvgCoords({ clientX: (a.x + b.x) / 2, clientY: (a.y + b.y) / 2 });
+          applyZoom(pinch.view.k * (distance / pinch.distance), centre.x, centre.y, pinch.view);
+        }
+        dragged = true;
+        return;
+      }
+
+      if (!drag || drag.id !== event.pointerId) return;
+      const dx = event.clientX - drag.startX;
+      const dy = event.clientY - drag.startY;
+      if (!dragged && Math.hypot(dx, dy) < 4) return;
+      dragged = true;
+      svg.classList.add("grabbing");
+      const perPixel = viewBoxScale();
+      view.k = drag.view.k;
+      view.x = drag.view.x + dx / perPixel;
+      view.y = drag.view.y + dy / perPixel;
+      hideTooltip();
+      applyView();
+    });
+
+    const endPointer = event => {
+      pointers.delete(event.pointerId);
+      if (pointers.size < 2) pinch = null;
+      if (drag && drag.id === event.pointerId) drag = null;
+      svg.classList.remove("grabbing");
+      // a short tap still counts as a click even if `click` fires later
+      if (dragged) setTimeout(() => { dragged = false; }, 0);
+    };
+    svg.addEventListener("pointerup", endPointer);
+    svg.addEventListener("pointercancel", endPointer);
+
+    svg.addEventListener("wheel", event => {
+      event.preventDefault();
+      const factor = Math.pow(1.0015, -event.deltaY);
+      const centre = toSvgCoords(event);
+      applyZoom(view.k * factor, centre.x, centre.y, view);
+    }, { passive: false });
+
+    svg.addEventListener("dblclick", event => {
+      event.preventDefault();
+      const centre = toSvgCoords(event);
+      const factor = view.k >= MAX_SCALE - 0.001 ? 0.5 : 1.6;
+      applyZoom(view.k * factor, centre.x, centre.y, view);
+    });
+
+    // the map is reachable by keyboard as well
+    svg.addEventListener("keydown", event => {
+      if (event.key === "+" || event.key === "=") { event.preventDefault(); zoomIn(); }
+      else if (event.key === "-" || event.key === "_") { event.preventDefault(); zoomOut(); }
+      else if (event.key === "0") { event.preventDefault(); resetView(); }
+    });
+  }
+
+  /** Device pixels -> viewBox units (accounts for "meet" letterboxing). */
+  function viewBoxScale() {
+    const rect = svg.getBoundingClientRect();
+    const scale = rect.width && rect.height
+      ? Math.min(rect.width / width, rect.height / height)
+      : 1;
+    return scale > 0 ? scale : 1;
+  }
+
+  function toSvgCoords(event) {
+    const rect = svg.getBoundingClientRect();
+    const scale = viewBoxScale();
+    const offsetX = (rect.width - width * scale) / 2;
+    const offsetY = (rect.height - height * scale) / 2;
+    return {
+      x: (event.clientX - rect.left - offsetX) / scale,
+      y: (event.clientY - rect.top - offsetY) / scale
+    };
+  }
+
+  function clampScale(k) {
+    return Math.min(MAX_SCALE, Math.max(MIN_SCALE, k));
+  }
+
+  /** Keep the map covering the viewport (no empty edges while zoomed in). */
+  function clampView() {
+    if (view.k <= 1.0001) {
+      view.k = 1;
+      view.x = 0;
+      view.y = 0;
+      return;
+    }
+    view.x = Math.min(0, Math.max(width * (1 - view.k), view.x));
+    view.y = Math.min(0, Math.max(height * (1 - view.k), view.y));
+  }
+
+  /** Zoom so that the given viewBox point stays under the cursor. */
+  function applyZoom(targetScale, centreX, centreY, base) {
+    const k = clampScale(targetScale);
+    if (Math.abs(k - view.k) < 0.0001 && base === view) return;
+    const from = base || view;
+    const ux = (centreX - from.x) / from.k;
+    const uy = (centreY - from.y) / from.k;
+    view.k = k;
+    view.x = centreX - k * ux;
+    view.y = centreY - k * uy;
+    clampView();
+    applyView();
+  }
+
+  function applyView() {
+    mapGroup.setAttribute("transform", `translate(${view.x.toFixed(2)} ${view.y.toFixed(2)}) scale(${view.k.toFixed(4)})`);
+    const inverse = 1 / view.k;
+    Array.prototype.forEach.call(labelGroup.children, label => {
+      const bx = Number(label.dataset.bx);
+      const by = Number(label.dataset.by);
+      if (isNaN(bx) || isNaN(by)) return;
+      label.setAttribute("transform", `translate(${bx} ${by}) scale(${inverse.toFixed(4)})`);
+    });
+    svg.classList.toggle("zoomed", view.k > 1.001);
+    hooks.onZoom(view.k, view.k > 1.001);
+  }
+
+  function zoomIn(step) {
+    applyZoom(view.k * (step || 1.5), width / 2, height / 2, view);
+  }
+
+  function zoomOut(step) {
+    applyZoom(view.k / (step || 1.5), width / 2, height / 2, view);
+  }
+
+  function resetView() {
+    view = { k: 1, x: 0, y: 0 };
+    applyView();
+  }
+
+  /** Frame a district (or the whole map) by its bounding box. */
+  function zoomToShape(id, padding) {
+    if (!id) { resetView(); return; }
+    const item = items.find(entry => entry.id === id);
+    if (!item) return;
+    const box = featureBox(item.feature);
+    const pad = padding === undefined ? 0.18 : padding;
+    const boxW = Math.max(box.w, 1) * (1 + pad);
+    const boxH = Math.max(box.h, 1) * (1 + pad);
+    const k = clampScale(Math.min(width / boxW, height / boxH, MAX_SCALE));
+    const centreX = (box.minX + box.maxX) / 2;
+    const centreY = (box.minY + box.maxY) / 2;
+    view.k = k;
+    view.x = width / 2 - k * centreX;
+    view.y = height / 2 - k * centreY;
+    clampView();
+    applyView();
   }
 
   /* ------------------------------------------------------------- data input */
@@ -79,6 +264,8 @@ const SVGMap = (() => {
     height = Math.round(BASE_WIDTH * (bounds.maxLat - bounds.minLat) /
       ((bounds.maxLon - bounds.minLon) * Math.cos(midLat() * Math.PI / 180)));
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("width", width);
+    svg.setAttribute("height", height);
 
     mapGroup.innerHTML = "";
     labelGroup.innerHTML = "";
@@ -111,6 +298,7 @@ const SVGMap = (() => {
       });
       path.addEventListener("click", event => {
         event.stopPropagation();
+        if (dragged) return; // the pointer was panning, not selecting
         hooks.onSelect(id);
       });
       path.addEventListener("keydown", event => {
@@ -135,6 +323,8 @@ const SVGMap = (() => {
 
     renderLabels();
     refresh();
+    view = { k: 1, x: 0, y: 0 };
+    applyView();
   }
 
   function renderLabels() {
@@ -147,8 +337,10 @@ const SVGMap = (() => {
       const size = labelSize(box, text);
       const centroid = projectionCenter(item.feature, box);
 
-      label.setAttribute("x", centroid.x.toFixed(1));
-      label.setAttribute("y", centroid.y.toFixed(1));
+      label.dataset.bx = centroid.x.toFixed(1);
+      label.dataset.by = centroid.y.toFixed(1);
+      label.setAttribute("x", "0");
+      label.setAttribute("y", "0");
       label.setAttribute("text-anchor", "middle");
       label.setAttribute("dominant-baseline", "central");
       label.setAttribute("class", "district-label");
@@ -346,12 +538,17 @@ const SVGMap = (() => {
     return { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
   }
 
-  /** Label size that fits inside the district outline. */
+  /**
+   * Label size that fits inside the district outline.
+   * Bengali glyphs run wider than Latin ones, so they get a larger per-character
+   * budget; otherwise names like নারায়ণগঞ্জ would overflow their district.
+   */
   function labelSize(box, text) {
     const chars = Math.max(3, text.length);
-    const byHeight = Math.min(box.w, box.h) * 0.3;
-    const byWidth = (box.w * 0.94) / (chars * 0.62);
-    return Math.max(6, Math.min(13, byHeight, byWidth));
+    const perChar = /[\u0980-\u09FF]/.test(text) ? 0.74 : 0.62;
+    const byHeight = Math.min(box.w, box.h) * 0.34;
+    const byWidth = (box.w * 0.98) / (chars * perChar);
+    return Math.max(6, Math.min(14, byHeight, byWidth));
   }
 
   /** Centroid that always falls inside the shape (largest ring, then inner point). */
@@ -405,6 +602,16 @@ const SVGMap = (() => {
     }
   }
 
+
+  /** Create an SVG text node with the export font applied explicitly. */
+  function exportText(opts, attrs, content) {
+    const node = document.createElementNS(NS, "text");
+    node.setAttribute("font-family", FONT);
+    Object.keys(attrs || {}).forEach(key => node.setAttribute(key, attrs[key]));
+    node.textContent = content;
+    return node;
+  }
+
   function buildExportSVGInternal(opts) {
     const legend = opts.legend || [];
     const legendCols = legend.length > 4 ? 2 : (legend.some(item => item.label.length > 26) ? 2 : 1);
@@ -412,11 +619,17 @@ const SVGMap = (() => {
     const footerH = 26 + legendRows * LEGEND_ROW + 18;
     const totalH = HEADER_H + height + footerH;
     const legendColW = width / legendCols;
-    // long adaptive labels ("সবচেয়ে দুর্বল ২৫% (≤ 16.93%)") must stay inside their column
+    // long adaptive labels ("সবচেয়ে দুর্বল ২৫% (16.93% বা কম)") must stay inside their column
     const legendChars = Math.max(12, Math.floor((legendColW - 68) / 7.6));
 
     const out = document.createElementNS(NS, "svg");
     out.setAttribute("xmlns", NS);
+    if (opts.fontCss) {
+      // fonts must travel inside the file: an SVG loaded as an <img> cannot fetch them
+      const style = document.createElementNS(NS, "style");
+      style.textContent = opts.fontCss;
+      out.appendChild(style);
+    }
     out.setAttribute("viewBox", `0 ${-HEADER_H} ${width} ${totalH}`);
     out.setAttribute("width", width);
     out.setAttribute("height", totalH);
@@ -430,32 +643,19 @@ const SVGMap = (() => {
     bg.setAttribute("fill", opts.background || "#0f172a");
     out.appendChild(bg);
 
-    const title = document.createElementNS(NS, "text");
-    title.setAttribute("x", 34);
-    title.setAttribute("y", -92);
-    title.setAttribute("fill", opts.text || "#f1f5f9");
-    title.setAttribute("font-size", "30");
-    title.setAttribute("font-weight", "700");
-    title.textContent = opts.title || "";
-    out.appendChild(title);
+    out.appendChild(exportText(opts, {
+      x: 34, y: -92, fill: opts.text || "#f1f5f9", "font-size": "30", "font-weight": "700"
+    }, opts.title || ""));
 
-    const subtitle = document.createElementNS(NS, "text");
-    subtitle.setAttribute("x", 34);
-    subtitle.setAttribute("y", -54);
-    subtitle.setAttribute("fill", opts.muted || "#94a3b8");
-    subtitle.setAttribute("font-size", "17");
-    subtitle.textContent = opts.subtitle || "";
-    out.appendChild(subtitle);
+    out.appendChild(exportText(opts, {
+      x: 34, y: -54, fill: opts.muted || "#94a3b8", "font-size": "17"
+    }, opts.subtitle || ""));
 
     if (opts.note) {
-      const note = document.createElementNS(NS, "text");
-      note.setAttribute("x", width - 34);
-      note.setAttribute("y", -92);
-      note.setAttribute("text-anchor", "end");
-      note.setAttribute("fill", opts.muted || "#94a3b8");
-      note.setAttribute("font-size", "15");
-      note.textContent = clip(opts.note, 40);
-      out.appendChild(note);
+      out.appendChild(exportText(opts, {
+        x: width - 34, y: -92, "text-anchor": "end",
+        fill: opts.muted || "#94a3b8", "font-size": "15"
+      }, clip(opts.note, 40)));
     }
 
     // copy the live map (paths + labels) with resolved inline styles
@@ -468,6 +668,11 @@ const SVGMap = (() => {
       copy.removeAttribute("role");
       copy.removeAttribute("class");
       if (copy.tagName.toLowerCase() === "text") {
+        // drop the on-screen zoom counter-scale: exports always show the full map
+        if (copy.dataset && copy.dataset.bx !== undefined) {
+          copy.setAttribute("transform", `translate(${copy.dataset.bx} ${copy.dataset.by})`);
+          ["bx", "by", "size", "tiny", "id"].forEach(key => delete copy.dataset[key]);
+        }
         // labels keep their inline styles; fill in anything the stylesheet provided
         const computed = window.getComputedStyle(node);
         ["fill", "stroke", "stroke-width", "paint-order", "font-family", "font-size",
@@ -502,13 +707,9 @@ const SVGMap = (() => {
       swatch.setAttribute("stroke", "rgba(255,255,255,0.35)");
       out.appendChild(swatch);
 
-      const text = document.createElementNS(NS, "text");
-      text.setAttribute("x", x + 30);
-      text.setAttribute("y", y);
-      text.setAttribute("fill", opts.text || "#f1f5f9");
-      text.setAttribute("font-size", "15");
-      text.textContent = clip(item.label, legendChars);
-      out.appendChild(text);
+      out.appendChild(exportText(opts, {
+        x: x + 30, y: y, fill: opts.text || "#f1f5f9", "font-size": "15"
+      }, clip(item.label, legendChars)));
     });
 
     return {
@@ -533,6 +734,11 @@ const SVGMap = (() => {
     init,
     setData,
     refresh,
+    zoomIn,
+    zoomOut,
+    resetView,
+    zoomToShape,
+    getZoom() { return view.k; },
     setSelected(id) { selectedId = id; refresh(); },
     setHovered(id) { hoverId = id; refresh(); },
     getSelected() { return selectedId; },

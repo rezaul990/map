@@ -153,7 +153,13 @@ const App = (() => {
       getStyle: styleForFeature,
       getLabel: featureLabel,
       getTooltip: featureTooltip,
-      onSelect: selectDistrict
+      onSelect: selectDistrict,
+      onZoom: (scale, zoomed) => {
+        const level = document.getElementById("zoomLevel");
+        if (level) level.textContent = Math.round(scale * 100) + "%";
+        const reset = document.getElementById("zoomReset");
+        if (reset) reset.disabled = !zoomed;
+      }
     });
   }
 
@@ -199,6 +205,10 @@ const App = (() => {
       savePrefs({ theme: next });
     });
 
+    document.getElementById("zoomIn").addEventListener("click", () => SVGMap.zoomIn());
+    document.getElementById("zoomOut").addEventListener("click", () => SVGMap.zoomOut());
+    document.getElementById("zoomReset").addEventListener("click", () => SVGMap.resetView());
+
     document.getElementById("resetView").addEventListener("click", () => {
       state.districtFilter = "all";
       document.getElementById("districtFilter").value = "all";
@@ -233,6 +243,13 @@ const App = (() => {
     // drawer
     document.getElementById("drawerClose").addEventListener("click", clearSelection);
     document.getElementById("drawerBackdrop").addEventListener("click", clearSelection);
+    document.getElementById("drawerZoomBtn").addEventListener("click", () => {
+      if (!state.selected) return;
+      SVGMap.zoomToShape(state.selected);
+      closeDrawer();
+      showToast(`${featureLabel({ properties: { shapeName: state.selected } })} জেলায় জুম করা হয়েছে`);
+    });
+
     document.getElementById("drawerFilterBtn").addEventListener("click", () => {
       if (!state.selected) return;
       state.districtFilter = state.selected;
@@ -249,9 +266,19 @@ const App = (() => {
         clearSelection();
         return;
       }
-      if (event.key === "/" && tag !== "input" && tag !== "select" && tag !== "textarea") {
+      if (tag === "input" || tag === "select" || tag === "textarea") return;
+      if (event.key === "/") {
         event.preventDefault();
         search.focus();
+      } else if (event.key === "+" || event.key === "=") {
+        event.preventDefault();
+        SVGMap.zoomIn();
+      } else if (event.key === "-" || event.key === "_") {
+        event.preventDefault();
+        SVGMap.zoomOut();
+      } else if (event.key === "0") {
+        event.preventDefault();
+        SVGMap.resetView();
       }
     });
   }
@@ -385,7 +412,7 @@ const App = (() => {
     }
     const noteEl = document.getElementById("dataNotes");
     noteEl.innerHTML = notes.length
-      ? notes.map(note => `<div class="note">⚠ ${escapeHtml(note)}</div>`).join("")
+      ? notes.map(note => `<div class="note">${escapeHtml(note)}</div>`).join("")
       : "";
   }
 
@@ -565,15 +592,15 @@ const App = (() => {
       return [
         { color: OVERDUE_RANK_COLORS.best, label: `কম বেড়েছে / কমেছে (নিচের ১/৩)`, min: -Infinity, max: low, tone: "good" },
         { color: OVERDUE_RANK_COLORS.warn, label: `মাঝারি বৃদ্ধি (${fmt(low)} – ${fmt(high)})`, min: low, max: high, tone: "warn" },
-        { color: OVERDUE_RANK_COLORS.bad, label: `সবচেয়ে বেশি বৃদ্ধি (> ${fmt(high)})`, min: high, max: Infinity, tone: "bad" }
+        { color: OVERDUE_RANK_COLORS.bad, label: `সবচেয়ে বেশি বৃদ্ধি (${fmt(high)} এর বেশি)`, min: high, max: Infinity, tone: "bad" }
       ];
     }
 
     return [
-      { color: RANK_COLORS.bad, label: `সবচেয়ে দুর্বল ২৫% (≤ ${fmt(q1)})`, min: -Infinity, max: q1, tone: "bad" },
+      { color: RANK_COLORS.bad, label: `সবচেয়ে দুর্বল ২৫% (${fmt(q1)} বা কম)`, min: -Infinity, max: q1, tone: "bad" },
       { color: RANK_COLORS.warn, label: `২৫–৫০% (${fmt(q1)} – ${fmt(q2)})`, min: q1, max: q2, tone: "warn" },
       { color: RANK_COLORS.good, label: `৫০–৭৫% (${fmt(q2)} – ${fmt(q3)})`, min: q2, max: q3, tone: "ok" },
-      { color: RANK_COLORS.best, label: `সেরা ২৫% (> ${fmt(q3)})`, min: q3, max: Infinity, tone: "good" }
+      { color: RANK_COLORS.best, label: `সেরা ২৫% (${fmt(q3)} এর বেশি)`, min: q3, max: Infinity, tone: "good" }
     ];
   }
 
@@ -744,6 +771,7 @@ const App = (() => {
       clearSelection();
       return;
     }
+    if (SVGMap.getZoom && SVGMap.getZoom() > 1.4) SVGMap.zoomToShape(id);
     state.selected = id;
     renderMapSelection();
     renderList();
@@ -885,6 +913,12 @@ const App = (() => {
 
   function renderLegend() {
     const legendEl = document.getElementById("legend");
+    const titleEl = document.getElementById("legendMetric");
+    if (titleEl) {
+      titleEl.textContent = metricConfig().label + (state.scale === "fixed"
+        ? " (নির্দিষ্ট থ্রেশহোল্ড)"
+        : " (তুলনামূলক)");
+    }
     const counts = new Map();
     let noData = 0;
 
@@ -1051,7 +1085,7 @@ const App = (() => {
       {
         keys: ["prevOverdue", "runningOverdue", "overdueChange"],
         value: stat ? stat.sumOverdueChange : null,
-        label: "Previous Month Overdue → Running Month Overdue"
+        label: "Previous Month Overdue / Running Month Overdue"
       }
     ];
     const totals = stat && stat.sum ? `
@@ -1206,6 +1240,12 @@ const App = (() => {
     const legendItems = bands().map(band => ({ color: band.color, label: band.label }));
     legendItems.push({ color: NO_DATA_COLOR, label: "ডেটা নেই" });
 
+    setStatus("ছবি তৈরি হচ্ছে...", "loading");
+    // fonts must be resolved before rasterising, otherwise the map can render with fallbacks
+    if (document.fonts && document.fonts.ready) {
+      try { await document.fonts.ready; } catch (err) { /* ignore */ }
+    }
+    const fontCss = await embeddableFontCss();
     const { markup, width, height } = SVGMap.buildExportSVG({
       title: "ওয়ালটন প্লাজা কালেকশন ম্যাপ",
       subtitle: `${metricConfig().label} — জেলাভিত্তিক`,
@@ -1213,7 +1253,8 @@ const App = (() => {
       background: colors.background,
       text: colors.text,
       muted: colors.muted,
-      note: state.fileName ? `সোর্স: ${state.fileName}` : ""
+      note: state.fileName ? `সোর্স: ${state.fileName}` : "",
+      fontCss
     });
 
     const scale = 2;
@@ -1236,9 +1277,55 @@ const App = (() => {
         }, "image/png");
       });
       showToast("ম্যাপ PNG ডাউনলোড হয়েছে");
+      updateStatusLine({ restored: false });
     } finally {
       URL.revokeObjectURL(url);
     }
+  }
+
+  /**
+   * Inline the vendored fonts as data URIs so exported PNGs keep correct Bengali
+   * text even on machines without a Bangla font installed (an SVG rasterised from
+   * an <img> cannot load external font files). Parsed once and cached.
+   */
+  let fontCssPromise = null;
+
+  function embeddableFontCss() {
+    if (fontCssPromise) return fontCssPromise;
+    fontCssPromise = (async () => {
+      try {
+        const css = await (await fetch("css/style.css")).text();
+        const blocks = css.match(/@font-face\s*\{[^}]+\}/g) || [];
+        const wanted = blocks.filter(block => /hind-siliguri-(400|700)-(bengali|latin)\.woff2/.test(block));
+        if (!wanted.length) return "";
+        const inlined = await Promise.all(wanted.map(async block => {
+          const url = block.match(/url\('([^']+)'\)/);
+          if (!url) return "";
+          const path = url[1].replace(/^\.\.\//, "");
+          const response = await fetch(path);
+          const buffer = await response.arrayBuffer();
+          const base64 = base64FromBuffer(buffer);
+          return block
+            .replace(/url\('[^']+'\)/g, `url('data:font/woff2;base64,${base64}')`)
+            .replace(/font-display:\s*swap;?/, "font-display: block;");
+        }));
+        return inlined.filter(Boolean).join("\n");
+      } catch (err) {
+        console.warn("ফন্ট এমবেড করা যায়নি", err);
+        return "";
+      }
+    })();
+    return fontCssPromise;
+  }
+
+  function base64FromBuffer(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
   }
 
   function loadImage(src) {
@@ -1284,7 +1371,10 @@ const App = (() => {
       selectDistrict,
       loadDemoData,
       exportCsv,
-      exportJson
+      exportJson,
+      embeddableFontCss,
+      zoomToShape: id => SVGMap.zoomToShape(id),
+      getZoom: () => SVGMap.getZoom()
     }
   };
 })();

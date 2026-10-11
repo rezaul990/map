@@ -7,9 +7,9 @@
 <meta name="color-scheme" content="dark light">
 <title>ওয়ালটন প্লাজা কালেকশন ম্যাপ</title>
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<!-- Bengali/Latin fonts are self-hosted (vendor/fonts): no external font CDN, works offline -->
+<link rel="preload" as="font" type="font/woff2" href="vendor/fonts/hind-siliguri-400-bengali.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="vendor/fonts/hind-siliguri-600-bengali.woff2" crossorigin>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -91,8 +91,8 @@
         </div>
         <label class="field-label" for="sortSelect">সাজান</label>
         <select id="sortSelect" class="filter-select" aria-label="সাজানোর নিয়ম">
-          <option value="name-asc">নাম (ক → ঙ)</option>
-          <option value="name-desc">নাম (ঙ → ক)</option>
+          <option value="name-asc">নাম (ক থেকে ঙ)</option>
+          <option value="name-desc">নাম (ঙ থেকে ক)</option>
           <option value="value-desc">সবচেয়ে ভালো আগে</option>
           <option value="value-asc">সবচেয়ে খারাপ আগে</option>
           <option value="plazas">সবচেয়ে বেশি প্লাজা</option>
@@ -110,6 +110,18 @@
         </label>
         <button id="resetView" class="btn tiny" type="button" hidden>সব জেলা দেখান</button>
       </div>
+      <div class="map-zoom" role="group" aria-label="ম্যাপ জুম">
+        <button id="zoomIn" class="zoom-btn" type="button" title="জুম ইন (+)" aria-label="জুম ইন">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <button id="zoomOut" class="zoom-btn" type="button" title="জুম আউট (−)" aria-label="জুম আউট">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg>
+        </button>
+        <button id="zoomReset" class="zoom-btn" type="button" title="আগের অবস্থায় (0)" aria-label="জুম রিসেট" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/></svg>
+        </button>
+        <span class="zoom-level" id="zoomLevel">100%</span>
+      </div>
       <div class="map" id="map">
         <div class="map-svg" id="mapSvg"></div>
         <div class="map-notice" id="mapNotice" hidden></div>
@@ -119,10 +131,11 @@
         <div class="map-empty-actions">
           <button id="demoBtn" class="btn ghost" type="button">ডেমো ডেটা দেখুন</button>
         </div>
-          <p class="map-empty-hint">জেলায় ক্লিক করলে প্লাজার বিস্তারিত দেখা যাবে • মাউস হোভারে টুলটিপ</p>
+          <p class="map-empty-hint">জেলায় ক্লিক করলে প্লাজার বিস্তারিত • চাকা/বোতামে জুম • ড্র্যাগ করে সরান • ডাবল-ক্লিকে জুম</p>
         </div>
       </div>
       <div class="map-legend">
+        <span class="legend-title">লিজেন্ড — <strong id="legendMetric"></strong></span>
         <div class="legend" id="legend"></div>
       </div>
     </section>
@@ -130,7 +143,7 @@
 
   <footer class="footer">
     <span>সব ডেটা আপনার ব্রাউজারেই প্রসেস ও সেভ হয় — কোনো সার্ভারে পাঠানো হয় না।</span>
-    <span>শর্টকাট: <kbd>/</kbd> সার্চ • <kbd>Esc</kbd> নির্বাচন বাতিল</span>
+    <span>শর্টকাট: <kbd>/</kbd> সার্চ • <kbd>+</kbd> <kbd>−</kbd> জুম • <kbd>0</kbd> রিসেট • <kbd>Esc</kbd> নির্বাচন বাতিল</span>
   </footer>
 </div>
 
@@ -148,7 +161,10 @@
   <div class="drawer-totals" id="drawerTotals"></div>
   <div class="drawer-toolbar">
     <h3 id="drawerListTitle">প্লাজা তালিকা</h3>
-    <button class="btn tiny" id="drawerFilterBtn" type="button">শুধু এই জেলা দেখান</button>
+    <span class="drawer-actions">
+      <button class="btn tiny" id="drawerZoomBtn" type="button">এই জেলায় জুম করুন</button>
+      <button class="btn tiny" id="drawerFilterBtn" type="button">শুধু এই জেলা দেখান</button>
+    </span>
   </div>
   <div class="drawer-list" id="drawerList"></div>
 </aside>

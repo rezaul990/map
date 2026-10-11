@@ -43,6 +43,15 @@ alongside so growth can be judged against the district's overdue book.
 - **নির্দিষ্ট** – the report's own thresholds (70 / 80 / 90%) for a like-for-like view across
   months and regions.
 
+**Navigation**
+
+- Zoom: mouse wheel (zooms at the pointer), pinch on touch, `+` / `−` buttons, double-click, or the
+  `+` / `−` / `0` keys. Zoom level is shown next to the buttons and the reset button lights up.
+- Pan: drag the map (touch or mouse). Panning never selects a district — clicks after a drag are ignored.
+- The drawer has **এই জেলায় জুম করুন** to frame the selected district (and the map auto-frames it when
+  you open a district while already zoomed in).
+- District labels counter-scale while zooming, so names stay readable instead of becoming huge.
+
 **Visualisation**
 - Aspect-correct projection (longitude × cos(latitude)), so Bangladesh is not stretched.
 - Hover tooltips show the value plus the raw report columns it came from, the plaza count
@@ -72,6 +81,11 @@ alongside so growth can be judged against the district's overdue book.
 - Vanilla HTML, CSS and JavaScript — no framework, no build step.
 - Pure SVG map rendered from a local GeoJSON (64 districts), no map service or API key.
 - SheetJS is vendored in `vendor/` (works offline) with a CDN fallback in `index.html`.
+- **Fonts are self-hosted** in `vendor/fonts/` (Hind Siliguri, Bengali + Latin subsets, OFL). No font
+  CDN is requested, so Bengali text renders correctly on offline/kiosk machines, and the PNG export
+  inlines the fonts as data URIs so rasterised maps keep their Bangla lettering.
+  `tests/fonts.test.js` fails the build if a UI string ever uses a character which is not covered by
+  those subsets — a single missing glyph (like `≤`) makes browsers fall back and mangle the whole line.
 
 ## Run
 
@@ -96,6 +110,7 @@ npm test        # parser unit tests + jsdom end-to-end UI test
   aliases, aggregation, and a set of assertions against `tests/fixtures/report-sample.js`,
   a copy of a real "Target Hire Accounts Summary Report" (spacer columns, padded headers,
   multi-line header cells and all).
+- `tests/fonts.test.js` — self-hosted font wiring and Bengali glyph coverage of every UI string.
 - `tests/e2e.test.js` — serves the app, loads it in jsdom, pushes a generated `.xlsx`
   through the real upload pipeline and asserts the UI (map, KPIs, legend, list, drawer,
   tooltips, filters, exports, persistence).
@@ -107,7 +122,8 @@ npm test        # parser unit tests + jsdom end-to-end UI test
 - `js/data.js` — English/Bengali display names (`BD_DISTRICTS`) and the spelling aliases
   used when a report uses a different name (`BD_DISTRICT_ALIASES`).
 - `data/plaza-district.json` — plaza → district/area/division master list.
-- `css/style.css` — theme tokens live in `:root` and `[data-theme="light"]`.
+- `css/style.css` — theme tokens live in `:root` and `[data-theme="light"]`; `@font-face` rules
+  at the top of the file describe the vendored fonts.
 
 ## Project layout
 
@@ -120,5 +136,6 @@ js/map.js             SVG map: projection, labels, tooltip, hover/selection, exp
 js/app.js             UI state, rendering, interactions, exports, persistence
 js/plaza.js           plaza → district master data (generated)
 vendor/xlsx.full.min.js  SheetJS build
+vendor/fonts/         self-hosted Hind Siliguri subsets (Bengali + Latin)
 tests/                node-based unit + e2e tests (plus a real report fixture)
 ```
