@@ -4,8 +4,8 @@
   "version": "2.0.0",
   "description": "Walton Plaza district collection map — static web app",
   "scripts": {
-    "start": "python3 -m http.server 8080",
-    "serve": "python3 -m http.server 8080",
+    "start": "python3 serve.py 8080",
+    "serve": "python3 serve.py 8080",
     "test": "node tests/parser.test.js && node tests/fonts.test.js && node tests/css.test.js && node tests/e2e.test.js"
   },
   "devDependencies": {

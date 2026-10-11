@@ -113,7 +113,7 @@ alongside so growth can be judged against the district's overdue book.
 ## Run
 
 ```sh
-python -m http.server 8080
+python3 serve.py 8080
 # or: npm start
 ```
 
