@@ -45,8 +45,10 @@ alongside so growth can be judged against the district's overdue book.
 
 **Navigation**
 
-- The map is measured against its panel and fitted to it, so the whole country is always visible —
-  the SVG can never overflow or be clipped, at any window size (it re-fits on resize/rotation).
+- The SVG fills its drawing area and letterboxes the map (`preserveAspectRatio="xMidYMid meet"`),
+  so the browser always renders the country as large as the available space allows and it can
+  neither overflow the panel nor collapse to a thumbnail. On short windows the surrounding chrome
+  (KPI cards, hints, legend title) is trimmed so the map keeps its size.
 - Zoom: mouse wheel (zooms at the pointer), pinch on touch, `+` / `−` buttons, double-click, or the
   `+` / `−` / `0` keys. Range is 40%–1000%: below 100% the map shrinks and stays centred, above it
   it fills the frame with pan limits so there are never empty edges. The level is shown next to the

@@ -1388,7 +1388,6 @@ const App = (() => {
       exportJson,
       embeddableFontCss,
       toggleExpanded,
-      refreshSize: () => SVGMap.fitToContainer(),
       isExpanded: () => SVGMap.isExpanded(),
       zoomToShape: id => SVGMap.zoomToShape(id),
       getZoom: () => SVGMap.getZoom()

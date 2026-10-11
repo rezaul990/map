@@ -333,7 +333,9 @@ body.busy .status-bar .upload-status::after {
 .kpi::before {
   content: "";
   position: absolute;
-  inset: 0 auto 0 0;
+  top: 0;
+  bottom: 0;
+  left: 0;
   width: 3px;
   background: var(--border-light);
 }
@@ -410,6 +412,7 @@ body.busy .status-bar .upload-status::after {
   flex-direction: column;
   overflow: hidden;
   max-height: calc(100vh - 90px);
+  max-height: min(calc(100dvh - 110px), 900px);
   position: sticky;
   top: 12px;
 }
@@ -562,8 +565,10 @@ body.busy .status-bar .upload-status::after {
   background:
     radial-gradient(90% 70% at 50% 8%, color-mix(in srgb, var(--accent) 9%, transparent) 0%, transparent 60%),
     radial-gradient(120% 120% at 80% 0%, var(--bg-soft) 0%, var(--bg-elevated) 65%);
-  min-height: 440px;
-  height: clamp(440px, calc(100vh - 104px), 1180px);
+  min-height: 380px;
+  height: calc(100vh - 104px);
+  height: calc(100dvh - 104px);
+  height: clamp(380px, calc(100dvh - 104px), 1180px);
   overflow: hidden;
   box-shadow: var(--shadow-sm);
 }
@@ -571,7 +576,10 @@ body.busy .status-bar .upload-status::after {
 /* full-viewport map mode (expand button / F) */
 .map-container.map-expanded {
   position: fixed;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   z-index: 150;
   height: auto;
   max-height: none;
@@ -582,8 +590,7 @@ body.busy .status-bar .upload-status::after {
 
 body.map-expanded-open { overflow: hidden; }
 
-.map-expanded .map { padding: 46px 12px 8px; }
-.map-expanded .map-svg { inset: 46px 12px 8px; }
+.map-expanded .map-svg { top: 44px; right: 10px; bottom: 8px; left: 10px; }
 
 .map-expand {
   position: absolute;
@@ -599,24 +606,34 @@ body.map-expanded-open { overflow: hidden; }
 .map-expand[aria-pressed="true"] .icon-expand { display: none; }
 .map-expand[aria-pressed="true"] .icon-collapse { display: block; }
 
-.map { position: relative; flex: 1 1 auto; min-height: 0; padding: 42px 10px 6px; }
+.map {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
 
+/* the drawing area is pinned to the panel: its box never depends on its content,
+   so the map can neither overflow the panel nor collapse to a thumbnail */
 .map-svg {
   position: absolute;
-  inset: 42px 10px 6px;
+  top: 40px;
+  right: 6px;
+  bottom: 6px;
+  left: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 0;
+  min-width: 0;
 }
 
+/* The SVG fills that box and letterboxes the map with preserveAspectRatio="meet":
+   the browser does the fitting, so the map is always as large as it can be. */
 .map-svg svg {
   display: block;
-  width: auto;
-  height: auto;
-  /* map.js sets an exact fitted size; these bounds guarantee it can never overflow */
-  max-width: 100%;
-  max-height: 100%;
+  width: 100%;
+  height: 100%;
 }
 
 /* the map area itself: grab to pan, wheel/pinch to zoom */
@@ -625,7 +642,6 @@ body.map-expanded-open { overflow: hidden; }
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
-  filter: drop-shadow(0 12px 26px rgba(2, 6, 23, 0.35));
 }
 
 .map-svg svg.map-interactive.grabbing { cursor: grabbing; }
@@ -784,7 +800,10 @@ body.map-expanded-open { overflow: hidden; }
 
 .map-empty {
   position: absolute;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -849,7 +868,10 @@ body.map-expanded-open { overflow: hidden; }
 
 .drawer-backdrop {
   position: fixed;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   background: rgba(2, 6, 23, 0.5);
   z-index: 80;
   backdrop-filter: blur(2px);
@@ -1025,8 +1047,7 @@ body.map-expanded-open { overflow: hidden; }
   .metric-tab { flex: 1; text-align: center; padding: 8px 8px; font-size: 0.76rem; }
   .metric-hint { font-size: 0.74rem; }
   .map-container { height: 70vh; min-height: 400px; }
-  .map { padding: 40px 4px 4px; }
-  .map-svg { inset: 40px 4px 4px; }
+  .map-svg { top: 38px; right: 4px; bottom: 4px; left: 4px; }
   .map-zoom { right: 8px; bottom: 8px; padding: 5px; }
   .map-expand { top: 8px; right: 8px; padding: 5px 9px; }
   .map-expand .map-expand-label { display: none; }
@@ -1047,6 +1068,29 @@ body.map-expanded-open { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
   html { scroll-behavior: auto; }
+}
+
+/* short windows (laptops, or a browser with small visible area):
+   trim the chrome around the map instead of shrinking the map */
+@media (max-height: 720px) {
+  .header { padding: 12px 0 8px; }
+  .brand-text h1 { font-size: 1.12rem; }
+  .kpis {
+    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    gap: 8px;
+    margin: 10px 0 12px;
+  }
+  .kpi { padding: 10px 12px; }
+  .kpi-label { font-size: 0.68rem; }
+  .kpi-value { font-size: 1.12rem; }
+  .kpi-sub { display: none; }
+  .metric-hint { display: none; }
+  .toolbar-row { margin-bottom: 10px; }
+  .map-container { min-height: 340px; }
+  .map-legend { padding: 6px 12px 8px; }
+  .legend-title { display: none; }
+  .legend-item { font-size: 0.74rem; }
+  .footer { display: none; }
 }
 
 @media (hover: none) {

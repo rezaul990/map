@@ -339,8 +339,8 @@ function report() {
     const title = doc.getElementById("legendMetric");
     assert.ok(/Collected Acc Qty|Collectable/.test(title.textContent), "legend names its metric: " + title.textContent);
     const svg = doc.querySelector("#map .map-svg svg");
-    assert.ok(Number(svg.getAttribute("width")) > 100 && Number(svg.getAttribute("height")) > 100,
-      "svg has an intrinsic size for aspect-based layout");
+    assert.match(svg.getAttribute("viewBox"), /^0 0 \d+ \d+$/, "viewBox drives the projection");
+    assert.strictEqual(svg.getAttribute("preserveAspectRatio"), "xMidYMid meet", "letterboxed fit");
   });
 
   check("zoom controls sit inside the map panel", () => {
@@ -380,51 +380,75 @@ function report() {
   });
 
   /* ---- layout: the map must always fit the panel ---------------------------- */
-  const mapHost = doc.getElementById("mapSvg");
   const svgEl = doc.querySelector("#mapSvg svg");
   const viewBox = (svgEl.getAttribute("viewBox") || "0 0 800 1000").split(/\s+/).map(Number);
   const vbW = viewBox[2];
   const vbH = viewBox[3];
-  let panelBox = { width: 470, height: 530 };
-  const stubRects = () => {
-    mapHost.getBoundingClientRect = () => ({
-      width: panelBox.width, height: panelBox.height, left: 0, top: 0,
-      right: panelBox.width, bottom: panelBox.height, x: 0, y: 0
-    });
-    svgEl.getBoundingClientRect = () => {
-      const w = parseFloat(svgEl.style.width) || 0;
-      const h = parseFloat(svgEl.style.height) || 0;
-      return { width: w, height: h, left: 0, top: 0, right: w, bottom: h, x: 0, y: 0 };
-    };
-  };
-  stubRects();
 
-  check("the map is fitted to the panel and can never overflow it", () => {
-    panelBox = { width: 470, height: 530 };
-    stubRects();
-    App.internals.refreshSize();
-    const expected = Math.min(panelBox.width / vbW, panelBox.height / vbH) * vbW;
-    const actual = parseFloat(svgEl.style.width);
-    assert.ok(Math.abs(actual - expected) < 1, `fitted width ${actual} should be ~${expected}`);
-    assert.ok(actual <= panelBox.width + 0.5, "fitted width fits the panel");
-    const height = parseFloat(svgEl.style.height);
-    assert.ok(height <= panelBox.height + 0.5, "fitted height fits the panel: " + height);
-    assert.ok(Math.abs(height / actual - vbH / vbW) < 0.01, "aspect ratio preserved");
+  /** The rendered map size for a given host box (letterbox "meet" maths). */
+  const renderedMap = (boxW, boxH) => {
+    const scale = Math.min(boxW / vbW, boxH / vbH);
+    return { scale, width: vbW * scale, height: vbH * scale };
+  };
+
+  const hostBox = { width: 470, height: 530 };
+  const stubSvgBox = () => {
+    svgEl.getBoundingClientRect = () => ({
+      width: hostBox.width, height: hostBox.height, left: 0, top: 0,
+      right: hostBox.width, bottom: hostBox.height, x: 0, y: 0
+    });
+  };
+  stubSvgBox();
+
+  check("the SVG fills its host so the browser can size the map", () => {
+    assert.strictEqual(svgEl.style.width, "100%");
+    assert.strictEqual(svgEl.style.height, "100%");
+    // the host itself is pinned to the panel, so its box never depends on the map
+    const host = doc.getElementById("mapSvg");
+    assert.ok(host.classList.contains("map-svg"), "dedicated drawing layer");
+    // regression guard: sizing the element from its own measured box fed back into
+    // itself and collapsed the map to a thumbnail
+    const source = fs.readFileSync(path.join(ROOT, "js/map.js"), "utf8");
+    assert.ok(!/style\.width\s*=\s*[^;]*px/.test(source), "map.js must not set pixel sizes");
+    assert.ok(!/getBoundingClientRect[\s\S]{0,400}style\.width/.test(source), "no measure-then-size loop");
   });
 
-  check("re-fitting keeps the map inside the panel at other sizes", () => {
-    [{ width: 320, height: 700 }, { width: 1200, height: 300 }, { width: 640, height: 640 }].forEach(box => {
-      panelBox = box;
-      stubRects();
-      App.internals.refreshSize();
-      const w = parseFloat(svgEl.style.width);
-      const h = parseFloat(svgEl.style.height);
-      assert.ok(w <= box.width + 0.5 && h <= box.height + 0.5, `${w}x${h} overflows ${box.width}x${box.height}`);
-      assert.ok(Math.abs(h / w - vbH / vbW) < 0.01, "aspect ratio preserved at " + box.width + "x" + box.height);
+  check("the map is always as large as the panel allows (never a thumbnail)", () => {
+    [
+      { width: 470, height: 530, bound: "height" },
+      { width: 970, height: 470, bound: "height" },
+      { width: 320, height: 700, bound: "width" },
+      { width: 1400, height: 900, bound: "height" }
+    ].forEach(box => {
+      const map = renderedMap(box.width, box.height);
+      assert.ok(map.width <= box.width + 0.5 && map.height <= box.height + 0.5,
+        `${Math.round(map.width)}x${Math.round(map.height)} overflows ${box.width}x${box.height}`);
+      // the limiting axis must be fully used, otherwise the map would be too small
+      const used = box.bound === "height" ? map.height / box.height : map.width / box.width;
+      assert.ok(used > 0.999, `map only uses ${(used * 100).toFixed(1)}% of the ${box.bound}`);
+      assert.ok(Math.abs(map.width / map.height - vbW / vbH) < 0.001, "aspect ratio preserved");
     });
-    panelBox = { width: 470, height: 530 };
-    stubRects();
-    App.internals.refreshSize();
+  });
+
+  check("a wide-but-short panel still shows a large map", () => {
+    // the case in the bug report: a wide, short panel used to yield a thumbnail
+    const box = { width: 970, height: 470 };
+    const map = renderedMap(box.width, box.height);
+    assert.ok(map.height / box.height > 0.99, "fills the height");
+    assert.ok(map.width >= 320, "map is a usable size: " + Math.round(map.width));
+    assert.ok(map.width / box.width > 0.3, "map uses a real share of the panel width");
+  });
+
+  check("pointer coordinates are mapped through the letterbox margins", () => {
+    const box = { width: 970, height: 470 };
+    const map = renderedMap(box.width, box.height);
+    const offsetX = (box.width - map.width) / 2;
+    // centre of the host must map to the centre of the viewBox
+    const centre = { x: box.width / 2, y: box.height / 2 };
+    const mappedX = (centre.x - offsetX) / map.scale;
+    const mappedY = (centre.y - 0) / map.scale;
+    assert.ok(Math.abs(mappedX - vbW / 2) < 1, "horizontal centre: " + mappedX);
+    assert.ok(Math.abs(mappedY - vbH / 2) < 1, "vertical centre: " + mappedY);
   });
 
   check("zoom out works below 100% and clamps at the minimum", () => {
@@ -445,15 +469,26 @@ function report() {
     assert.match(doc.querySelector("#map .map-paths").getAttribute("transform"), /translate\(0\.00 0\.00\).*scale\(1/, "reset transform");
   });
 
-  check("window resize re-fits the map automatically", () => {
-    panelBox = { width: 900, height: 380 };
-    stubRects();
-    window.dispatchEvent(new window.Event("resize"));
-    const height = parseFloat(svgEl.style.height);
-    assert.ok(height <= 380.5, "re-fitted after resize: " + height);
-    panelBox = { width: 470, height: 530 };
-    stubRects();
-    window.dispatchEvent(new window.Event("resize"));
+  check("zoom stays anchored at the pointer after a resize", () => {
+    const first = { width: 470, height: 530 };
+    hostBox.width = first.width; hostBox.height = first.height;
+    stubSvgBox();
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const svg = doc.querySelector("#map svg");
+    const wheel = (x, y) => {
+      const event = new window.MouseEvent("wheel", { bubbles: true, cancelable: true, clientX: x, clientY: y });
+      Object.defineProperty(event, "deltaY", { value: -240 });
+      svg.dispatchEvent(event);
+    };
+    wheel(235, 265);
+    assert.ok(App.internals.getZoom() > 1, "zoomed at the panel centre");
+    const centred = doc.querySelector("#map .map-paths").getAttribute("transform");
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    wheel(235, 265);
+    assert.strictEqual(doc.querySelector("#map .map-paths").getAttribute("transform"), centred,
+      "zooming at the same point is repeatable regardless of the host size");
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(App.internals.getZoom(), 1, "reset before the next check");
   });
 
   check("expand mode fills the viewport and Esc leaves it", () => {

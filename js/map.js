@@ -39,21 +39,6 @@ const SVGMap = (() => {
 
   /* ------------------------------------------------------------------ setup */
 
-  /** Keep the SVG element inside the panel: the whole map is always visible at 100%. */
-  function fitToContainer() {
-    if (!svg) return null;
-    const rect = container.getBoundingClientRect();
-    if (!rect || !rect.width || !rect.height) return null;
-    const scale = Math.min(rect.width / width, rect.height / height);
-    const boxW = Math.max(1, width * scale);
-    const boxH = Math.max(1, height * scale);
-    svg.style.width = boxW.toFixed(2) + "px";
-    svg.style.height = boxH.toFixed(2) + "px";
-    svg.setAttribute("width", Math.round(boxW));
-    svg.setAttribute("height", Math.round(boxH));
-    return { width: boxW, height: boxH, scale };
-  }
-
   function init(options) {
     container = options.container;
     accent = options.accent || accent;
@@ -72,6 +57,8 @@ const SVGMap = (() => {
     svg.setAttribute("role", "img");
     svg.setAttribute("aria-label", "বাংলাদেশের জেলাভিত্তিক কালেকশন ম্যাপ");
     svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    svg.style.width = "100%";
+    svg.style.height = "100%";
     svg.classList.add("bd-map");
     mapGroup = document.createElementNS(NS, "g");
     mapGroup.setAttribute("class", "map-paths");
@@ -93,14 +80,6 @@ const SVGMap = (() => {
     });
 
     attachInteraction();
-
-    // re-fit whenever the panel changes size (window resize, mobile rotation, expand)
-    if (typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(() => fitToContainer());
-      observer.observe(container);
-    }
-    window.addEventListener("resize", fitToContainer);
-    fitToContainer();
   }
 
   /* ----------------------------------------------------------- zoom & pan */
@@ -185,22 +164,35 @@ const SVGMap = (() => {
   }
 
   /**
-   * Device pixels -> viewBox units.
-   * The element is sized to the same aspect ratio as the viewBox (see fitToContainer),
-   * so there is no letterboxing to compensate for.
+   * How the viewBox sits inside the element box.
+   * The SVG fills its host and letterboxes with preserveAspectRatio="meet", so the
+   * rendered map is always as large as the available space allows.
    */
-  function viewBoxScale() {
-    const rect = svg.getBoundingClientRect();
-    const scale = rect && rect.width ? rect.width / width : 1;
-    return scale > 0 ? scale : 1;
+  function metrics() {
+    const rect = svg && svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
+    const boxWidth = rect && rect.width ? rect.width : width;
+    const boxHeight = rect && rect.height ? rect.height : height;
+    const scale = Math.min(boxWidth / width, boxHeight / height) || 1;
+    return {
+      scale,
+      offsetX: (boxWidth - width * scale) / 2,
+      offsetY: (boxHeight - height * scale) / 2,
+      width: boxWidth,
+      height: boxHeight
+    };
   }
 
+  function viewBoxScale() {
+    return metrics().scale;
+  }
+
+  /** Pointer position -> viewBox coordinates (accounts for the letterbox margins). */
   function toSvgCoords(event) {
     const rect = svg.getBoundingClientRect();
-    const scale = viewBoxScale();
+    const box = metrics();
     return {
-      x: (event.clientX - rect.left) / scale,
-      y: (event.clientY - rect.top) / scale
+      x: (event.clientX - rect.left - box.offsetX) / box.scale,
+      y: (event.clientY - rect.top - box.offsetY) / box.scale
     };
   }
 
@@ -275,9 +267,6 @@ const SVGMap = (() => {
       button.setAttribute("aria-pressed", String(!!expanded));
       button.setAttribute("aria-label", expanded ? "ম্যাপ ছোট করুন" : "ম্যাপ বড় করুন");
     }
-    // the panel just changed size; re-fit on the next frame
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(fitToContainer);
-    fitToContainer();
   }
 
   function isExpanded() {
@@ -314,8 +303,6 @@ const SVGMap = (() => {
     height = Math.round(BASE_WIDTH * (bounds.maxLat - bounds.minLat) /
       ((bounds.maxLon - bounds.minLon) * Math.cos(midLat() * Math.PI / 180)));
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-    svg.setAttribute("width", width);
-    svg.setAttribute("height", height);
 
     mapGroup.innerHTML = "";
     labelGroup.innerHTML = "";
@@ -373,7 +360,6 @@ const SVGMap = (() => {
 
     renderLabels();
     refresh();
-    fitToContainer();
     view = { k: 1, x: 0, y: 0 };
     applyView();
   }
@@ -789,7 +775,6 @@ const SVGMap = (() => {
     zoomOut,
     resetView,
     zoomToShape,
-    fitToContainer,
     setExpanded,
     isExpanded,
     getZoom() { return view.k; },
