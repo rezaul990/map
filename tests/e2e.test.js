@@ -1,0 +1,334 @@
+/**
+ * End-to-end UI test.
+ *
+ * Serves the repo over HTTP, loads index.html in jsdom, pushes a generated
+ * Excel report through the upload pipeline and asserts the whole UI reacts.
+ *
+ * Run with:  npm install && node tests/e2e.test.js
+ */
+const fs = require("fs");
+const path = require("path");
+const http = require("http");
+const assert = require("assert");
+
+const ROOT = path.join(__dirname, "..");
+
+let JSDOM;
+let VirtualConsole;
+try {
+  ({ JSDOM, VirtualConsole } = require("jsdom"));
+} catch (err) {
+  console.error("jsdom is required for the e2e test — run `npm install` first.");
+  process.exit(1);
+}
+const XLSX = require(path.join(ROOT, "vendor/xlsx.full.min.js"));
+
+const MIME = {
+  ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
+  ".json": "application/json", ".geojson": "application/json", ".svg": "image/svg+xml"
+};
+
+function serve() {
+  const server = http.createServer((req, res) => {
+    const file = path.join(ROOT, decodeURIComponent(req.url.split("?")[0]).replace(/^\/+/, ""));
+    if (!file.startsWith(ROOT) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+      res.writeHead(404).end("not found");
+      return;
+    }
+    res.writeHead(200, { "content-type": MIME[path.extname(file)] || "application/octet-stream" });
+    fs.createReadStream(file).pipe(res);
+  });
+  return new Promise(resolve => server.listen(0, "127.0.0.1", () => resolve(server)));
+}
+
+/** Build a workbook shaped like the real "hireTargetAccAll" export. */
+function buildWorkbook() {
+  const plazaMap = JSON.parse(fs.readFileSync(path.join(ROOT, "data/plaza-district.json"), "utf8"));
+  const header = new Array(26).fill("");
+  header[0] = "S/N"; header[1] = "Division"; header[2] = "Area"; header[3] = "Plaza Code"; header[7] = "Plaza";
+  header[9] = "Collectable Acc Qty"; header[10] = "Collected Acc Qty"; header[11] = "Collectable Vs. Collected Acc Qty (%)";
+  header[13] = "Collectable Amt."; header[16] = "Collected Acc Amt."; header[18] = "Advance"; header[19] = "Total Collection";
+  header[20] = "Collectable Vs. Collected Amt. (%)"; header[21] = "Prev. Overdue"; header[23] = "Running Overdue";
+  header[25] = "Overdue Increase/(Decrease)";
+
+  const rows = [[], [], header];
+  plazaMap.filter((_, i) => i % 6 === 0).forEach((plaza, i) => {
+    const row = new Array(26).fill("");
+    const qty = 45 + ((i * 7) % 55);
+    row[1] = plaza.division; row[2] = plaza.area; row[7] = plaza.plaza;
+    row[9] = 1000 + i; row[10] = 900 + i; row[11] = qty; row[13] = 500000 + i * 100;
+    row[16] = 400000 + i * 100; row[19] = 2500; row[20] = qty - 3;
+    row[21] = 10000; row[23] = 10000 + (i % 20) * 100 - 300; row[25] = (i % 20) * 100 - 300;
+    rows.push(row);
+  });
+  rows.push(["", "Total", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]);
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([["Report"], ["cover sheet"]]), "Cover");
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), "S N Division Area Plaza");
+  return Buffer.from(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }));
+}
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const results = [];
+function check(name, fn) {
+  try {
+    fn();
+    results.push("  ok   " + name);
+  } catch (err) {
+    results.push("  FAIL " + name + " -> " + err.message);
+    process.exitCode = 1;
+  }
+}
+
+(async () => {
+  const server = await serve();
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const geo = JSON.parse(fs.readFileSync(path.join(ROOT, "data/bangladesh.geojson"), "utf8"));
+
+  const virtualConsole = new VirtualConsole();
+  virtualConsole.on("jsdomError", () => {});
+
+  const dom = await JSDOM.fromURL(base + "/index.html", {
+    runScripts: "dangerously",
+    resources: "usable",
+    pretendToBeVisual: true,
+    virtualConsole,
+    beforeParse(window) {
+      window.fetch = async url => {
+        if (String(url).includes("bangladesh.geojson")) return { ok: true, status: 200, json: async () => geo };
+        throw new Error("unexpected fetch " + url);
+      };
+      window.confirm = () => true;
+      window.__blobs = [];
+      window.URL.createObjectURL = blob => { window.__blobs.push(blob); return "blob:mock/" + window.__blobs.length; };
+      window.URL.revokeObjectURL = () => {};
+    }
+  });
+
+  const { window } = dom;
+  const doc = window.document;
+  await sleep(800);
+  const App = window.eval("App"); // declared with const in a classic script
+  const blobText = index => new Promise(resolve => {
+    const blob = window.__blobs[index];
+    if (blob && typeof blob.text === "function") { blob.text().then(resolve); return; }
+    window.eval(`(function(){var fr=new FileReader();fr.onload=function(){window.__csv=fr.result};fr.readAsText(window.__blobs[${index}]);})()`);
+    setTimeout(() => resolve(window.__csv), 50);
+  });
+
+  /* ---------------------------------------------------------------- checks */
+
+  check("boots and renders 64 districts with labels", () => {
+    assert.strictEqual(doc.querySelectorAll("#map svg path.map-path").length, 64);
+    assert.strictEqual(doc.querySelectorAll(".district-label").length, 64);
+    assert.ok(doc.querySelectorAll("#kpis .kpi").length >= 5);
+  });
+
+  check("shows the empty state before any upload", () => {
+    assert.strictEqual(doc.getElementById("mapEmpty").hidden, false);
+    assert.strictEqual(doc.getElementById("exportBtn").disabled, true);
+  });
+
+  const buffer = buildWorkbook().toString("base64");
+  window.eval(`window.__buf=(function(){var b=atob(${JSON.stringify(buffer)});var u=new Uint8Array(b.length);for(var i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u.buffer;})()`);
+  const parsed = await App.internals.ingestBuffer(window.__buf, "hireTargetAccAll.xlsx");
+  await sleep(60);
+
+  check("parses the report sheet even when a cover sheet is first", () => {
+    const state = App.internals.state;
+    assert.ok(parsed.entries.length > 100, "entries: " + parsed.entries.length);
+    assert.ok(Object.keys(state.stats).length > 40, "districts: " + Object.keys(state.stats).length);
+    assert.strictEqual(state.unmatched.length, 0, "all plazas mapped");
+  });
+
+  check("status line and KPI cards reflect the upload", () => {
+    const status = doc.getElementById("uploadStatus").textContent;
+    assert.ok(status.includes(String(parsed.entries.length)), "status: " + status);
+    const values = Array.from(doc.querySelectorAll(".kpi-value")).map(el => el.textContent);
+    assert.ok(values.includes(new Intl.NumberFormat("en-IN").format(parsed.entries.length)), "kpi: " + values.join(" | "));
+  });
+
+  check("legend band counts add up to all 64 districts", () => {
+    const counts = Array.from(doc.querySelectorAll("#legend .legend-count")).map(el => Number(el.textContent));
+    assert.strictEqual(counts.length, 5);
+    assert.strictEqual(counts.reduce((a, b) => a + b, 0), 64);
+  });
+
+  check("sidebar lists all 64 districts, most with values", () => {
+    const rows = doc.querySelectorAll("#locationList .location-item");
+    assert.strictEqual(rows.length, 64);
+    const valued = Array.from(rows).filter(row => !row.querySelector(".location-value").classList.contains("dim"));
+    assert.ok(valued.length > 40, "valued rows: " + valued.length);
+    assert.ok(doc.getElementById("listCount").textContent.includes("64"));
+  });
+
+  check("hovering a list row highlights that district on the map", () => {
+    const row = doc.querySelector("#locationList .location-item");
+    row.dispatchEvent(new window.MouseEvent("pointerenter", { bubbles: true }));
+    const hovered = doc.querySelectorAll("#map path.map-path.focused");
+    assert.ok(hovered.length >= 1, "focused paths: " + hovered.length);
+    row.dispatchEvent(new window.MouseEvent("pointerleave", { bubbles: true }));
+  });
+
+  check("clicking a district opens the detail drawer with plaza rows", () => {
+    const target = Array.from(doc.querySelectorAll("#locationList .location-item"))
+      .find(el => !el.querySelector(".location-value").classList.contains("dim"));
+    target.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.ok(doc.getElementById("drawer").classList.contains("open"));
+    assert.ok(doc.querySelectorAll("#drawerList .drawer-row").length >= 1);
+    assert.ok(doc.getElementById("drawerStats").children.length >= 4);
+    assert.ok(doc.getElementById("drawerTotals").textContent.includes("Collectable Amt"));
+    assert.strictEqual(doc.querySelectorAll("#map path.map-path.selected").length, 1);
+    assert.ok(doc.querySelectorAll("#map path.map-path.dimmed").length > 50);
+    doc.getElementById("drawerClose").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(doc.getElementById("drawer").classList.contains("open"), false);
+  });
+
+  check("metric tabs switch legend, hint and tooltip data", () => {
+    const tab = doc.querySelector('.metric-tab[data-metric="overdueChange"]');
+    tab.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.ok(tab.classList.contains("active"));
+    assert.strictEqual(doc.querySelectorAll("#legend .legend-item").length, 3);
+    const counts = Array.from(doc.querySelectorAll("#legend .legend-count")).map(el => Number(el.textContent));
+    assert.strictEqual(counts.reduce((a, b) => a + b, 0), 64);
+    assert.ok(doc.getElementById("metricHint").textContent.length > 10);
+    doc.querySelector('.metric-tab[data-metric="collectedQty"]').dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(doc.querySelectorAll("#legend .legend-item").length, 5);
+  });
+
+  check("search matches English, Bengali and plaza names", () => {
+    const search = doc.getElementById("searchInput");
+    const type = value => { search.value = value; search.dispatchEvent(new window.Event("input", { bubbles: true })); };
+    type("chatto");
+    assert.strictEqual(doc.querySelectorAll("#locationList .location-item").length, 1);
+    type("ঢাকা");
+    assert.ok(doc.querySelector('#locationList .location-item .location-name').textContent.includes("ঢাকা"));
+    type("zzz-no-such-district");
+    assert.ok(doc.querySelector("#locationList .list-empty"));
+    type("");
+    assert.strictEqual(doc.querySelectorAll("#locationList .location-item").length, 64);
+  });
+
+  check("sorting by value puts the best district first", () => {
+    const sort = doc.getElementById("sortSelect");
+    sort.value = "value-desc";
+    sort.dispatchEvent(new window.Event("change", { bubbles: true }));
+    const values = Array.from(doc.querySelectorAll("#locationList .location-value"))
+      .map(el => el.textContent)
+      .filter(text => /%$/.test(text))
+      .map(parseFloat);
+    assert.ok(values.length > 10, "valued rows: " + values.length);
+    for (let i = 1; i < values.length; i++) assert.ok(values[i - 1] >= values[i], "descending at " + i);
+    // districts without data must sink to the bottom
+    const lastRow = Array.from(doc.querySelectorAll("#locationList .location-item")).pop();
+    assert.ok(lastRow.querySelector(".location-value").classList.contains("dim"));
+  });
+
+  check("district filter focuses one district without hiding the rest", () => {
+    const select = doc.getElementById("districtFilter");
+    select.value = "Dhaka";
+    select.dispatchEvent(new window.Event("change", { bubbles: true }));
+    assert.strictEqual(doc.querySelectorAll("#map path.map-path").length, 64);
+    assert.strictEqual(doc.querySelectorAll("#map path.map-path.selected").length, 1);
+    assert.strictEqual(doc.querySelectorAll("#map path.map-path.selected")[0].dataset.id, "Dhaka");
+    assert.strictEqual(doc.querySelectorAll("#locationList .location-item").length, 1);
+    assert.strictEqual(doc.getElementById("resetView").hidden, false);
+    doc.getElementById("resetView").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(doc.querySelectorAll("#map path.map-path.selected").length, 0);
+  });
+
+  check("district name toggle hides the labels", () => {
+    const toggle = doc.getElementById("labelToggle");
+    toggle.checked = false;
+    toggle.dispatchEvent(new window.Event("change", { bubbles: true }));
+    const hidden = Array.from(doc.querySelectorAll(".district-label")).filter(el => el.style.display === "none");
+    assert.ok(hidden.length > 50, "hidden labels: " + hidden.length);
+    toggle.checked = true;
+    toggle.dispatchEvent(new window.Event("change", { bubbles: true }));
+  });
+
+  check("hovering a district shows a tooltip with its value", () => {
+    const path = doc.querySelector('#map path.map-path[data-id="Dhaka"]');
+    assert.ok(path, "Dhaka path exists");
+    path.dispatchEvent(new window.MouseEvent("pointerenter", { bubbles: true, clientX: 100, clientY: 100 }));
+    const tooltip = doc.querySelector(".map-tooltip");
+    assert.strictEqual(tooltip.style.opacity, "1");
+    assert.ok(tooltip.textContent.includes("ঢাকা"), "tooltip text: " + tooltip.textContent);
+    assert.ok(/[\d.]+%/.test(tooltip.textContent), "tooltip value: " + tooltip.textContent);
+    path.dispatchEvent(new window.MouseEvent("pointerleave", { bubbles: true }));
+    assert.strictEqual(tooltip.style.opacity, "0");
+  });
+
+  check("map panel layout keeps the legend and the empty state in place", () => {
+    assert.ok(doc.querySelector(".map-container .map-legend #legend"), "legend inside the map panel");
+    assert.ok(doc.querySelector(".sidebar #locationList"), "list inside the sidebar");
+    assert.ok(doc.querySelector("#map .map-svg svg"), "svg mounted in its own layer");
+  });
+
+  check("export SVG is self-contained and carries legend + labels", () => {
+    const exported = window.eval(`SVGMap.buildExportSVG({
+      title: "test", subtitle: "sub",
+      legend: [{ color: "#dc2626", label: "0 – 69.99%" }, { color: "#64748b", label: "ডেটা নেই" }],
+      background: "#131c2e", text: "#eef2f8", muted: "#9aa8bd", note: "src.xlsx"
+    })`);
+    assert.strictEqual((exported.markup.match(/<path/g) || []).length, 64, "district paths");
+    assert.ok(exported.markup.includes("0 – 69.99%") && exported.markup.includes("ডেটা নেই"));
+    assert.ok(exported.markup.includes("test") && exported.markup.includes("src.xlsx"));
+    assert.ok(exported.markup.includes('font-size'), "inline label typography");
+    assert.ok(exported.markup.includes('fill="#'), "explicit fills");
+    assert.ok(exported.height > 900 && exported.width === 800, exported.width + "x" + exported.height);
+  });
+
+  check("theme toggle flips the colour scheme", () => {
+    const before = doc.documentElement.dataset.theme;
+    doc.getElementById("themeToggle").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.notStrictEqual(doc.documentElement.dataset.theme, before);
+  });
+
+  {
+    const before = window.__blobs.length;
+    App.internals.exportCsv();
+    const csv = await blobText(window.__blobs.length - 1);
+    check("CSV export writes a header plus one row per district", () => {
+      assert.strictEqual(window.__blobs.length, before + 1);
+      assert.ok(/^\uFEFF?District,District \(BN\)/.test(csv), "header: " + JSON.stringify(csv.slice(0, 30)));
+      assert.strictEqual(csv.trim().split(/\r?\n/).length, 65);
+      assert.ok(csv.includes("ঢাকা"));
+    });
+
+    const beforeJson = window.__blobs.length;
+    App.internals.exportJson();
+    const json = JSON.parse(await blobText(beforeJson));
+    check("JSON export contains districts and plaza level data", () => {
+      assert.strictEqual(json.districts.length, 64);
+      assert.strictEqual(json.plazas.length, parsed.entries.length);
+      assert.ok(json.plazas[0].qtyPct !== undefined);
+    });
+  }
+
+  check("dataset is persisted for the next visit", () => {
+    const raw = window.localStorage.getItem("plaza-map-dataset-v2");
+    assert.ok(raw && raw.length > 1000, "localStorage payload");
+    assert.strictEqual(JSON.parse(raw).entries.length, parsed.entries.length);
+  });
+
+  check("clear + demo data work without a report file", () => {
+    doc.getElementById("clearBtn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(App.internals.state.entries.length, 0);
+    assert.strictEqual(doc.getElementById("mapEmpty").hidden, false);
+    doc.getElementById("demoBtn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const state = App.internals.state;
+    assert.ok(state.entries.length > 600, "demo plazas: " + state.entries.length);
+    assert.ok(Object.keys(state.stats).length > 50, "demo districts: " + Object.keys(state.stats).length);
+  });
+
+  console.log(results.join("\n"));
+  const passed = results.filter(r => r.startsWith("  ok")).length;
+  console.log(`\n${passed}/${results.length} e2e checks passed`);
+  dom.window.close();
+  server.close();
+})().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
