@@ -11,7 +11,7 @@
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url('../vendor/fonts/hind-siliguri-400-bengali.woff2?v=4') format('woff2');
+  src: url('../vendor/fonts/hind-siliguri-400-bengali.woff2?v=5') format('woff2');
   unicode-range: U+0951-0952,U+0964-0965,U+0980-09FE,U+1CD0,U+1CD2,U+1CD5-1CD6,U+1CD8,U+1CE1,U+1CEA,U+1CED,U+1CF2,U+1CF5-1CF7,U+200C-200D,U+20B9,U+25CC,U+A8F1;
 }
 @font-face {
@@ -19,7 +19,7 @@
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url('../vendor/fonts/hind-siliguri-400-latin.woff2?v=4') format('woff2');
+  src: url('../vendor/fonts/hind-siliguri-400-latin.woff2?v=5') format('woff2');
   unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
 }
 @font-face {
@@ -27,7 +27,7 @@
   font-style: normal;
   font-weight: 600;
   font-display: swap;
-  src: url('../vendor/fonts/hind-siliguri-600-bengali.woff2?v=4') format('woff2');
+  src: url('../vendor/fonts/hind-siliguri-600-bengali.woff2?v=5') format('woff2');
   unicode-range: U+0951-0952,U+0964-0965,U+0980-09FE,U+1CD0,U+1CD2,U+1CD5-1CD6,U+1CD8,U+1CE1,U+1CEA,U+1CED,U+1CF2,U+1CF5-1CF7,U+200C-200D,U+20B9,U+25CC,U+A8F1;
 }
 @font-face {
@@ -35,7 +35,7 @@
   font-style: normal;
   font-weight: 600;
   font-display: swap;
-  src: url('../vendor/fonts/hind-siliguri-600-latin.woff2?v=4') format('woff2');
+  src: url('../vendor/fonts/hind-siliguri-600-latin.woff2?v=5') format('woff2');
   unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
 }
 @font-face {
@@ -43,7 +43,7 @@
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url('../vendor/fonts/hind-siliguri-700-bengali.woff2?v=4') format('woff2');
+  src: url('../vendor/fonts/hind-siliguri-700-bengali.woff2?v=5') format('woff2');
   unicode-range: U+0951-0952,U+0964-0965,U+0980-09FE,U+1CD0,U+1CD2,U+1CD5-1CD6,U+1CD8,U+1CE1,U+1CEA,U+1CED,U+1CF2,U+1CF5-1CF7,U+200C-200D,U+20B9,U+25CC,U+A8F1;
 }
 @font-face {
@@ -51,7 +51,7 @@
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url('../vendor/fonts/hind-siliguri-700-latin.woff2?v=4') format('woff2');
+  src: url('../vendor/fonts/hind-siliguri-700-latin.woff2?v=5') format('woff2');
   unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
 }
 
@@ -652,7 +652,7 @@ body.map-expanded-open { overflow: hidden; }
   padding: 9px 16px 11px;
   border-top: 1px solid var(--border);
   background: var(--bg-soft);
-  max-height: 104px;
+  max-height: 86px;
   overflow-y: auto;
 }
 
@@ -759,6 +759,26 @@ body.map-expanded-open { overflow: hidden; }
 .zoom-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
 .zoom-btn:active:not(:disabled) { transform: scale(0.94); }
 .zoom-btn:disabled { opacity: 0.35; cursor: default; }
+
+.zoom-chip {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 12;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-elevated));
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 7px 13px;
+  border-radius: 999px;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-sm);
+}
+
+.zoom-chip:hover { background: color-mix(in srgb, var(--accent) 26%, var(--bg-elevated)); }
 
 .zoom-level {
   font-size: 0.68rem;

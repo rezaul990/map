@@ -401,8 +401,9 @@ function report() {
   stubSvgBox();
 
   check("the SVG fills its host so the browser can size the map", () => {
-    assert.strictEqual(svgEl.style.width, "100%");
-    assert.strictEqual(svgEl.style.height, "100%");
+    assert.strictEqual(svgEl.getAttribute("width"), "100%");
+    assert.strictEqual(svgEl.getAttribute("height"), "100%");
+    assert.strictEqual(svgEl.style.width, "", "no inline pixel sizing");
     // the host itself is pinned to the panel, so its box never depends on the map
     const host = doc.getElementById("mapSvg");
     assert.ok(host.classList.contains("map-svg"), "dedicated drawing layer");
@@ -476,7 +477,9 @@ function report() {
     doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     const svg = doc.querySelector("#map svg");
     const wheel = (x, y) => {
-      const event = new window.MouseEvent("wheel", { bubbles: true, cancelable: true, clientX: x, clientY: y });
+      const event = new window.MouseEvent("wheel", {
+        bubbles: true, cancelable: true, clientX: x, clientY: y, ctrlKey: true
+      });
       Object.defineProperty(event, "deltaY", { value: -240 });
       svg.dispatchEvent(event);
     };
@@ -683,14 +686,41 @@ function report() {
     doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
   });
 
-  check("wheel zooms at the pointer", () => {
+  check("a plain wheel scrolls the page instead of zooming the map", () => {
     const svg = doc.querySelector("#map svg");
-    const event = new window.MouseEvent("wheel", { bubbles: true, cancelable: true, clientX: 300, clientY: 300 });
-    Object.defineProperty(event, "deltaY", { value: -240 });
-    svg.dispatchEvent(event);
-    assert.ok(App.internals.getZoom() > 1.2, "wheel zoom: " + App.internals.getZoom());
+    const wheel = (modifier) => {
+      const event = new window.MouseEvent("wheel", {
+        bubbles: true, cancelable: true, clientX: 300, clientY: 300, ctrlKey: modifier
+      });
+      Object.defineProperty(event, "deltaY", { value: -240 });
+      svg.dispatchEvent(event);
+      return event;
+    };
+    const plain = wheel(false);
+    assert.strictEqual(plain.defaultPrevented, false, "page keeps scrolling");
+    assert.strictEqual(App.internals.getZoom(), 1, "plain wheel must not zoom");
+
+    const modified = wheel(true);
+    assert.strictEqual(modified.defaultPrevented, true, "ctrl+wheel is handled by the map");
+    assert.ok(App.internals.getZoom() > 1.2, "ctrl+wheel zooms: " + App.internals.getZoom());
     doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     assert.strictEqual(App.internals.getZoom(), 1);
+  });
+
+  check("an off-fit view is flagged and one click restores it", () => {
+    const chip = doc.getElementById("zoomChip");
+    assert.strictEqual(chip.hidden, true, "hidden at 100%");
+    for (let i = 0; i < 3; i++) doc.getElementById("zoomOut").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(chip.hidden, false, "shown when zoomed out");
+    assert.match(chip.textContent, /জুম \d+%/, "chip reports the level: " + chip.textContent);
+    chip.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(App.internals.getZoom(), 1, "chip restores the fit view");
+    assert.strictEqual(chip.hidden, true);
+
+    doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(chip.hidden, false, "shown when zoomed in too");
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(chip.hidden, true);
   });
 
   check("a district and its name always transform together", () => {

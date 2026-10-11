@@ -10,7 +10,25 @@
 <!-- Bengali/Latin fonts are self-hosted (vendor/fonts): no external font CDN, works offline -->
 <link rel="preload" as="font" type="font/woff2" href="vendor/fonts/hind-siliguri-400-bengali.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="vendor/fonts/hind-siliguri-600-bengali.woff2" crossorigin>
-<link rel="stylesheet" href="css/style.css?v=4">
+<link rel="stylesheet" href="css/style.css?v=5">
+<!--
+  Critical map geometry, inline on purpose.
+
+  The map box must never depend on the stylesheet arriving fresh: a browser that
+  still holds an older css/style.css used the `inset` shorthand, which older
+  engines ignore, so the drawing box collapsed and the SVG fell back to its
+  default 300x150 size. These rules travel with the document itself, so the box
+  is pinned no matter which stylesheet version is cached. Values match
+  css/style.css (tests/css.test.js checks that they do).
+-->
+<style>
+.map-svg { position: absolute; top: 40px; right: 6px; bottom: 6px; left: 6px; display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 0; }
+.map-svg svg { display: block; width: 100%; height: 100%; }
+.map-svg svg.map-interactive { touch-action: none; user-select: none; -webkit-user-select: none; }
+.map-expanded .map-svg { top: 44px; right: 10px; bottom: 8px; left: 10px; }
+@media (max-width: 720px) { .map-svg { top: 38px; right: 4px; bottom: 4px; left: 4px; } }
+@media (max-height: 720px) { .map-svg { top: 36px; bottom: 6px; } }
+</style>
 </head>
 <body>
 <div class="app">
@@ -116,6 +134,7 @@
         <svg class="icon-collapse" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3m8 0v-3a2 2 0 0 1 2-2h3"/></svg>
         <span class="map-expand-label">পুরো স্ক্রিন</span>
       </button>
+      <button id="zoomChip" class="zoom-chip" type="button" hidden>জুম 100% — পুরো ম্যাপ দেখুন</button>
       <div class="map-zoom" role="group" aria-label="ম্যাপ জুম">
         <button id="zoomIn" class="zoom-btn" type="button" title="জুম ইন (+)" aria-label="জুম ইন">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -137,7 +156,7 @@
         <div class="map-empty-actions">
           <button id="demoBtn" class="btn ghost" type="button">ডেমো ডেটা দেখুন</button>
         </div>
-          <p class="map-empty-hint">জেলায় ক্লিক করলে প্লাজার বিস্তারিত • চাকা/বোতামে জুম • ড্র্যাগ করে সরান • ডাবল-ক্লিকে জুম • <kbd>F</kbd> পুরো স্ক্রিন</p>
+          <p class="map-empty-hint">জেলায় ক্লিক করলে প্লাজার বিস্তারিত • <kbd>Ctrl</kbd>+চাকা বা বোতামে জুম • ড্র্যাগ করে সরান • ডাবল-ক্লিকে জুম • <kbd>F</kbd> পুরো স্ক্রিন</p>
         </div>
       </div>
       <div class="map-legend">
@@ -185,10 +204,10 @@ if (typeof XLSX === "undefined") {
   document.write('<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"><\/script>');
 }
 </script>
-<script src="js/plaza.js?v=4"></script>
-<script src="js/data.js?v=4"></script>
-<script src="js/parse.js?v=4"></script>
-<script src="js/map.js?v=4"></script>
-<script src="js/app.js?v=4"></script>
+<script src="js/plaza.js?v=5"></script>
+<script src="js/data.js?v=5"></script>
+<script src="js/parse.js?v=5"></script>
+<script src="js/map.js?v=5"></script>
+<script src="js/app.js?v=5"></script>
 </body>
 </html>

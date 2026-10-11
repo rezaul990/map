@@ -162,6 +162,13 @@ const App = (() => {
         // the panel is too small to label every district: say so instead of showing mush
         const hint = document.getElementById("labelsHint");
         if (hint) hint.hidden = !(namesHidden && state.ready);
+        // a view that is not "fit" must be obvious (and one click away from fitting)
+        const chip = document.getElementById("zoomChip");
+        if (chip) {
+          const off = Math.abs(scale - 1) > 0.001;
+          chip.hidden = !off;
+          if (off) chip.textContent = `জুম ${Math.round(scale * 100)}% — পুরো ম্যাপ দেখুন`;
+        }
       }
     });
   }
@@ -212,6 +219,10 @@ const App = (() => {
     document.getElementById("zoomIn").addEventListener("click", () => SVGMap.zoomIn());
     document.getElementById("zoomOut").addEventListener("click", () => SVGMap.zoomOut());
     document.getElementById("zoomReset").addEventListener("click", () => SVGMap.resetView());
+    document.getElementById("zoomChip").addEventListener("click", () => {
+      SVGMap.resetView();
+      showToast("ম্যাপ পুরো ফ্রেমে দেখানো হচ্ছে");
+    });
 
     document.getElementById("resetView").addEventListener("click", () => {
       state.districtFilter = "all";

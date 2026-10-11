@@ -58,8 +58,10 @@ const SVGMap = (() => {
     svg.setAttribute("role", "img");
     svg.setAttribute("aria-label", "বাংলাদেশের জেলাভিত্তিক কালেকশন ম্যাপ");
     svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
-    svg.style.width = "100%";
-    svg.style.height = "100%";
+    // percentage attributes (not pixels) so the map always fills its host, even if a
+    // cached stylesheet is missing the corresponding CSS rules
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("height", "100%");
     svg.classList.add("bd-map");
     mapGroup = document.createElementNS(NS, "g");
     mapGroup.setAttribute("class", "map-view");
@@ -154,7 +156,10 @@ const SVGMap = (() => {
     svg.addEventListener("pointerup", endPointer);
     svg.addEventListener("pointercancel", endPointer);
 
+    // Ctrl/⌘ + wheel zooms; a plain wheel scrolls the page. (Wheel-only zoom used to
+    // shrink the map whenever someone scrolled past it with the cursor on the panel.)
     svg.addEventListener("wheel", event => {
+      if (!event.ctrlKey && !event.metaKey) return;
       event.preventDefault();
       const factor = Math.pow(1.0015, -event.deltaY);
       const centre = toSvgCoords(event);

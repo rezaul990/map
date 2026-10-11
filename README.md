@@ -48,14 +48,22 @@ alongside so growth can be judged against the district's overdue book.
 - The SVG fills its drawing area and letterboxes the map (`preserveAspectRatio="xMidYMid meet"`),
   so the browser always renders the country as large as the available space allows and it can
   neither overflow the panel nor collapse to a thumbnail.
+- The map's size does not depend on the stylesheet being fresh: the svg carries percentage
+  `width`/`height` attributes, and the drawing box's offsets are repeated in a small inline
+  `<style>` in `index.html` (using longhands, never the `inset` shorthand) so an old cached
+  `style.css` cannot collapse the box and drop the map to the default 300×150 svg size.
+  `tests/css.test.js` keeps the inline copy and `css/style.css` in agreement.
 - On short windows the chrome around the map is trimmed, the KPI cards become one compact
   scrolling strip, the legend floats over the empty left margin, and the map keeps the full panel
   height. `/css` and `/js` assets carry a `?v=` query so a browser can never mix an old script with
   a new stylesheet after a deploy.
-- Zoom: mouse wheel (zooms at the pointer), pinch on touch, `+` / `−` buttons, double-click, or the
-  `+` / `−` / `0` keys. Range is 40%–1000%: below 100% the map shrinks and stays centred, above it
-  it fills the frame with pan limits so there are never empty edges. The level is shown next to the
-  buttons and the reset button lights up when the view is not at 100%.
+- Zoom: `Ctrl`/`⌘` + mouse wheel (zooms at the pointer), pinch on touch, `+` / `−` buttons,
+  double-click, or the `+` / `−` / `0` keys. A plain wheel scrolls the page instead of zooming, so
+  scrolling past the panel can never leave the map stranded at 40%. Range is 40%–1000%: below 100%
+  the map shrinks and stays centred, above it it fills the frame with pan limits so there are never
+  empty edges. The level is shown next to the buttons, the reset button lights up when the view is
+  not at 100%, and a **জুম N% — পুরো ম্যাপ দেখুন** chip appears over the map: one click restores the
+  fit-to-panel view.
 - Pan: drag the map (touch or mouse) while zoomed in. At 100% there is nothing to pan — dragging
   does nothing instead of pushing the map out of frame. Panning never selects a district.
 - **পুরো স্ক্রিন** button (or `F`) expands the map to the whole viewport; `Esc` leaves it.
