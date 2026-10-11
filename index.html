@@ -110,6 +110,11 @@
         </label>
         <button id="resetView" class="btn tiny" type="button" hidden>সব জেলা দেখান</button>
       </div>
+      <button id="mapExpand" class="btn tiny map-expand" type="button" aria-pressed="false" aria-label="ম্যাপ বড় করুন" title="পুরো স্ক্রিনে দেখুন (F)">
+        <svg class="icon-expand" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m8 0h3a2 2 0 0 0 2-2v-3"/></svg>
+        <svg class="icon-collapse" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3m8 0v-3a2 2 0 0 1 2-2h3"/></svg>
+        <span class="map-expand-label">পুরো স্ক্রিন</span>
+      </button>
       <div class="map-zoom" role="group" aria-label="ম্যাপ জুম">
         <button id="zoomIn" class="zoom-btn" type="button" title="জুম ইন (+)" aria-label="জুম ইন">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -131,7 +136,7 @@
         <div class="map-empty-actions">
           <button id="demoBtn" class="btn ghost" type="button">ডেমো ডেটা দেখুন</button>
         </div>
-          <p class="map-empty-hint">জেলায় ক্লিক করলে প্লাজার বিস্তারিত • চাকা/বোতামে জুম • ড্র্যাগ করে সরান • ডাবল-ক্লিকে জুম</p>
+          <p class="map-empty-hint">জেলায় ক্লিক করলে প্লাজার বিস্তারিত • চাকা/বোতামে জুম • ড্র্যাগ করে সরান • ডাবল-ক্লিকে জুম • <kbd>F</kbd> পুরো স্ক্রিন</p>
         </div>
       </div>
       <div class="map-legend">
@@ -143,7 +148,7 @@
 
   <footer class="footer">
     <span>সব ডেটা আপনার ব্রাউজারেই প্রসেস ও সেভ হয় — কোনো সার্ভারে পাঠানো হয় না।</span>
-    <span>শর্টকাট: <kbd>/</kbd> সার্চ • <kbd>+</kbd> <kbd>−</kbd> জুম • <kbd>0</kbd> রিসেট • <kbd>Esc</kbd> নির্বাচন বাতিল</span>
+    <span>শর্টকাট: <kbd>/</kbd> সার্চ • <kbd>+</kbd> <kbd>−</kbd> জুম • <kbd>0</kbd> রিসেট • <kbd>F</kbd> পুরো স্ক্রিন • <kbd>Esc</kbd> বাতিল</span>
   </footer>
 </div>
 

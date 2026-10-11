@@ -45,9 +45,15 @@ alongside so growth can be judged against the district's overdue book.
 
 **Navigation**
 
+- The map is measured against its panel and fitted to it, so the whole country is always visible —
+  the SVG can never overflow or be clipped, at any window size (it re-fits on resize/rotation).
 - Zoom: mouse wheel (zooms at the pointer), pinch on touch, `+` / `−` buttons, double-click, or the
-  `+` / `−` / `0` keys. Zoom level is shown next to the buttons and the reset button lights up.
-- Pan: drag the map (touch or mouse). Panning never selects a district — clicks after a drag are ignored.
+  `+` / `−` / `0` keys. Range is 40%–1000%: below 100% the map shrinks and stays centred, above it
+  it fills the frame with pan limits so there are never empty edges. The level is shown next to the
+  buttons and the reset button lights up when the view is not at 100%.
+- Pan: drag the map (touch or mouse) while zoomed in. At 100% there is nothing to pan — dragging
+  does nothing instead of pushing the map out of frame. Panning never selects a district.
+- **পুরো স্ক্রিন** button (or `F`) expands the map to the whole viewport; `Esc` leaves it.
 - The drawer has **এই জেলায় জুম করুন** to frame the selected district (and the map auto-frames it when
   you open a district while already zoomed in).
 - District labels counter-scale while zooming, so names stay readable instead of becoming huge.

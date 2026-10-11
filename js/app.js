@@ -205,6 +205,7 @@ const App = (() => {
       savePrefs({ theme: next });
     });
 
+    document.getElementById("mapExpand").addEventListener("click", () => toggleExpanded());
     document.getElementById("zoomIn").addEventListener("click", () => SVGMap.zoomIn());
     document.getElementById("zoomOut").addEventListener("click", () => SVGMap.zoomOut());
     document.getElementById("zoomReset").addEventListener("click", () => SVGMap.resetView());
@@ -263,6 +264,7 @@ const App = (() => {
     document.addEventListener("keydown", event => {
       const tag = (event.target.tagName || "").toLowerCase();
       if (event.key === "Escape") {
+        if (SVGMap.isExpanded()) { toggleExpanded(false); return; }
         clearSelection();
         return;
       }
@@ -279,6 +281,9 @@ const App = (() => {
       } else if (event.key === "0") {
         event.preventDefault();
         SVGMap.resetView();
+      } else if (event.key === "f" || event.key === "F") {
+        event.preventDefault();
+        toggleExpanded();
       }
     });
   }
@@ -777,6 +782,15 @@ const App = (() => {
     renderList();
     renderDrawer();
     openDrawer();
+  }
+
+  /** Expand the map panel to the full viewport (and back). */
+  function toggleExpanded(force) {
+    const next = force === undefined ? !SVGMap.isExpanded() : !!force;
+    SVGMap.setExpanded(next);
+    const label = document.querySelector("#mapExpand .map-expand-label");
+    if (label) label.textContent = next ? "ছোট করুন" : "পুরো স্ক্রিন";
+    showToast(next ? "পুরো স্ক্রিনে ম্যাপ — বন্ধ করতে Esc চাপুন" : "স্বাভাবিক ভিউ");
   }
 
   function clearSelection() {
@@ -1373,6 +1387,9 @@ const App = (() => {
       exportCsv,
       exportJson,
       embeddableFontCss,
+      toggleExpanded,
+      refreshSize: () => SVGMap.fitToContainer(),
+      isExpanded: () => SVGMap.isExpanded(),
       zoomToShape: id => SVGMap.zoomToShape(id),
       getZoom: () => SVGMap.getZoom()
     }

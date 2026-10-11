@@ -28,8 +28,8 @@ const SVGMap = (() => {
   let accent = "#38bdf8";
   let plainRender = false;
 
-  /* zoom / pan */
-  const MIN_SCALE = 1;
+  /* zoom / pan: 1 = the whole map fits the panel, below that it shrinks with a margin */
+  const MIN_SCALE = 0.4;
   const MAX_SCALE = 10;
   let view = { k: 1, x: 0, y: 0 };
   let drag = null;
@@ -38,6 +38,21 @@ const SVGMap = (() => {
   let dragged = false;
 
   /* ------------------------------------------------------------------ setup */
+
+  /** Keep the SVG element inside the panel: the whole map is always visible at 100%. */
+  function fitToContainer() {
+    if (!svg) return null;
+    const rect = container.getBoundingClientRect();
+    if (!rect || !rect.width || !rect.height) return null;
+    const scale = Math.min(rect.width / width, rect.height / height);
+    const boxW = Math.max(1, width * scale);
+    const boxH = Math.max(1, height * scale);
+    svg.style.width = boxW.toFixed(2) + "px";
+    svg.style.height = boxH.toFixed(2) + "px";
+    svg.setAttribute("width", Math.round(boxW));
+    svg.setAttribute("height", Math.round(boxH));
+    return { width: boxW, height: boxH, scale };
+  }
 
   function init(options) {
     container = options.container;
@@ -78,6 +93,14 @@ const SVGMap = (() => {
     });
 
     attachInteraction();
+
+    // re-fit whenever the panel changes size (window resize, mobile rotation, expand)
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => fitToContainer());
+      observer.observe(container);
+    }
+    window.addEventListener("resize", fitToContainer);
+    fitToContainer();
   }
 
   /* ----------------------------------------------------------- zoom & pan */
@@ -123,6 +146,7 @@ const SVGMap = (() => {
       view.k = drag.view.k;
       view.x = drag.view.x + dx / perPixel;
       view.y = drag.view.y + dy / perPixel;
+      clampView(); // never drag the map out of frame
       hideTooltip();
       applyView();
     });
@@ -160,23 +184,23 @@ const SVGMap = (() => {
     });
   }
 
-  /** Device pixels -> viewBox units (accounts for "meet" letterboxing). */
+  /**
+   * Device pixels -> viewBox units.
+   * The element is sized to the same aspect ratio as the viewBox (see fitToContainer),
+   * so there is no letterboxing to compensate for.
+   */
   function viewBoxScale() {
     const rect = svg.getBoundingClientRect();
-    const scale = rect.width && rect.height
-      ? Math.min(rect.width / width, rect.height / height)
-      : 1;
+    const scale = rect && rect.width ? rect.width / width : 1;
     return scale > 0 ? scale : 1;
   }
 
   function toSvgCoords(event) {
     const rect = svg.getBoundingClientRect();
     const scale = viewBoxScale();
-    const offsetX = (rect.width - width * scale) / 2;
-    const offsetY = (rect.height - height * scale) / 2;
     return {
-      x: (event.clientX - rect.left - offsetX) / scale,
-      y: (event.clientY - rect.top - offsetY) / scale
+      x: (event.clientX - rect.left) / scale,
+      y: (event.clientY - rect.top) / scale
     };
   }
 
@@ -184,12 +208,16 @@ const SVGMap = (() => {
     return Math.min(MAX_SCALE, Math.max(MIN_SCALE, k));
   }
 
-  /** Keep the map covering the viewport (no empty edges while zoomed in). */
+  /**
+   * Pan limits.
+   * k <= 1  -> no panning, the map stays centred (smaller than the frame when zoomed out)
+   * k >  1  -> keep the map covering the frame, so there are never empty edges
+   */
   function clampView() {
+    if (view.k < MIN_SCALE) view.k = MIN_SCALE;
     if (view.k <= 1.0001) {
-      view.k = 1;
-      view.x = 0;
-      view.y = 0;
+      view.x = width * (1 - view.k) / 2;
+      view.y = height * (1 - view.k) / 2;
       return;
     }
     view.x = Math.min(0, Math.max(width * (1 - view.k), view.x));
@@ -212,7 +240,7 @@ const SVGMap = (() => {
 
   function applyView() {
     mapGroup.setAttribute("transform", `translate(${view.x.toFixed(2)} ${view.y.toFixed(2)}) scale(${view.k.toFixed(4)})`);
-    const inverse = 1 / view.k;
+    const inverse = view.k > 1 ? 1 / view.k : 1;
     Array.prototype.forEach.call(labelGroup.children, label => {
       const bx = Number(label.dataset.bx);
       const by = Number(label.dataset.by);
@@ -234,6 +262,28 @@ const SVGMap = (() => {
   function resetView() {
     view = { k: 1, x: 0, y: 0 };
     applyView();
+  }
+
+  /** Grow the panel to fill the viewport (used by the expand button). */
+  function setExpanded(expanded) {
+    if (!container) return;
+    const panel = container.closest(".map-container") || container;
+    panel.classList.toggle("map-expanded", !!expanded);
+    document.body.classList.toggle("map-expanded-open", !!expanded);
+    const button = document.getElementById("mapExpand");
+    if (button) {
+      button.setAttribute("aria-pressed", String(!!expanded));
+      button.setAttribute("aria-label", expanded ? "ম্যাপ ছোট করুন" : "ম্যাপ বড় করুন");
+    }
+    // the panel just changed size; re-fit on the next frame
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(fitToContainer);
+    fitToContainer();
+  }
+
+  function isExpanded() {
+    if (!container) return false;
+    const panel = container.closest(".map-container") || container;
+    return panel.classList.contains("map-expanded");
   }
 
   /** Frame a district (or the whole map) by its bounding box. */
@@ -323,6 +373,7 @@ const SVGMap = (() => {
 
     renderLabels();
     refresh();
+    fitToContainer();
     view = { k: 1, x: 0, y: 0 };
     applyView();
   }
@@ -738,6 +789,9 @@ const SVGMap = (() => {
     zoomOut,
     resetView,
     zoomToShape,
+    fitToContainer,
+    setExpanded,
+    isExpanded,
     getZoom() { return view.k; },
     setSelected(id) { selectedId = id; refresh(); },
     setHovered(id) { hoverId = id; refresh(); },

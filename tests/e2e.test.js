@@ -379,6 +379,100 @@ function report() {
     assert.ok(exported.height > 900 && exported.width === 800, exported.width + "x" + exported.height);
   });
 
+  /* ---- layout: the map must always fit the panel ---------------------------- */
+  const mapHost = doc.getElementById("mapSvg");
+  const svgEl = doc.querySelector("#mapSvg svg");
+  const viewBox = (svgEl.getAttribute("viewBox") || "0 0 800 1000").split(/\s+/).map(Number);
+  const vbW = viewBox[2];
+  const vbH = viewBox[3];
+  let panelBox = { width: 470, height: 530 };
+  const stubRects = () => {
+    mapHost.getBoundingClientRect = () => ({
+      width: panelBox.width, height: panelBox.height, left: 0, top: 0,
+      right: panelBox.width, bottom: panelBox.height, x: 0, y: 0
+    });
+    svgEl.getBoundingClientRect = () => {
+      const w = parseFloat(svgEl.style.width) || 0;
+      const h = parseFloat(svgEl.style.height) || 0;
+      return { width: w, height: h, left: 0, top: 0, right: w, bottom: h, x: 0, y: 0 };
+    };
+  };
+  stubRects();
+
+  check("the map is fitted to the panel and can never overflow it", () => {
+    panelBox = { width: 470, height: 530 };
+    stubRects();
+    App.internals.refreshSize();
+    const expected = Math.min(panelBox.width / vbW, panelBox.height / vbH) * vbW;
+    const actual = parseFloat(svgEl.style.width);
+    assert.ok(Math.abs(actual - expected) < 1, `fitted width ${actual} should be ~${expected}`);
+    assert.ok(actual <= panelBox.width + 0.5, "fitted width fits the panel");
+    const height = parseFloat(svgEl.style.height);
+    assert.ok(height <= panelBox.height + 0.5, "fitted height fits the panel: " + height);
+    assert.ok(Math.abs(height / actual - vbH / vbW) < 0.01, "aspect ratio preserved");
+  });
+
+  check("re-fitting keeps the map inside the panel at other sizes", () => {
+    [{ width: 320, height: 700 }, { width: 1200, height: 300 }, { width: 640, height: 640 }].forEach(box => {
+      panelBox = box;
+      stubRects();
+      App.internals.refreshSize();
+      const w = parseFloat(svgEl.style.width);
+      const h = parseFloat(svgEl.style.height);
+      assert.ok(w <= box.width + 0.5 && h <= box.height + 0.5, `${w}x${h} overflows ${box.width}x${box.height}`);
+      assert.ok(Math.abs(h / w - vbH / vbW) < 0.01, "aspect ratio preserved at " + box.width + "x" + box.height);
+    });
+    panelBox = { width: 470, height: 530 };
+    stubRects();
+    App.internals.refreshSize();
+  });
+
+  check("zoom out works below 100% and clamps at the minimum", () => {
+    const out = doc.getElementById("zoomOut");
+    assert.strictEqual(App.internals.getZoom(), 1);
+    out.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.ok(App.internals.getZoom() < 0.7, "first zoom out: " + App.internals.getZoom());
+    for (let i = 0; i < 6; i++) out.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const clamped = App.internals.getZoom();
+    assert.ok(clamped >= 0.39 && clamped <= 0.41, "clamped at the minimum: " + clamped);
+    assert.strictEqual(doc.getElementById("zoomLevel").textContent, Math.round(clamped * 100) + "%");
+    // the shrunken map is centred rather than pinned to a corner
+    const transform = doc.querySelector("#map .map-paths").getAttribute("transform");
+    const tx = Number(transform.match(/translate\((-?[\d.]+)/)[1]);
+    assert.ok(tx > 0, "centred horizontally when smaller than the frame: " + transform);
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(App.internals.getZoom(), 1);
+    assert.match(doc.querySelector("#map .map-paths").getAttribute("transform"), /translate\(0\.00 0\.00\).*scale\(1/, "reset transform");
+  });
+
+  check("window resize re-fits the map automatically", () => {
+    panelBox = { width: 900, height: 380 };
+    stubRects();
+    window.dispatchEvent(new window.Event("resize"));
+    const height = parseFloat(svgEl.style.height);
+    assert.ok(height <= 380.5, "re-fitted after resize: " + height);
+    panelBox = { width: 470, height: 530 };
+    stubRects();
+    window.dispatchEvent(new window.Event("resize"));
+  });
+
+  check("expand mode fills the viewport and Esc leaves it", () => {
+    const panel = doc.querySelector(".map-container");
+    doc.getElementById("mapExpand").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.ok(panel.classList.contains("map-expanded"), "panel expanded");
+    assert.ok(doc.body.classList.contains("map-expanded-open"));
+    assert.strictEqual(doc.getElementById("mapExpand").getAttribute("aria-pressed"), "true");
+    assert.strictEqual(doc.querySelector("#mapExpand .map-expand-label").textContent, "ছোট করুন");
+    doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    assert.strictEqual(panel.classList.contains("map-expanded"), false, "Esc collapses");
+    assert.strictEqual(doc.getElementById("mapExpand").getAttribute("aria-pressed"), "false");
+    // keyboard shortcut toggles it back on
+    doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "f", bubbles: true }));
+    assert.ok(panel.classList.contains("map-expanded"), "F expands");
+    doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "f", bubbles: true }));
+    assert.strictEqual(panel.classList.contains("map-expanded"), false, "F collapses again");
+  });
+
   check("zoom buttons, keyboard and readout drive the map transform", () => {
     const level = doc.getElementById("zoomLevel");
     const reset = doc.getElementById("zoomReset");
@@ -423,17 +517,33 @@ function report() {
     assert.strictEqual(App.internals.getZoom(), 1);
   });
 
-  check("dragging pans the map and never selects a district", async () => {
+  check("at 100% the map cannot be dragged out of frame", () => {
+    const paths = doc.querySelector("#map .map-paths");
+    const fire = (type, x, y) => paths.dispatchEvent(new window.MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 }));
+    fire("pointerdown", 200, 200);
+    fire("pointermove", 100, 120);
+    fire("pointerup", 100, 120);
+    assert.match(paths.getAttribute("transform"), /translate\(0\.00 0\.00\) scale\(1/, "stay centred at 100%");
+  });
+
+  check("dragging a zoomed map pans it and never selects a district", () => {
     const paths = doc.querySelector("#map .map-paths");
     const before = { selected: App.internals.state.selected };
     const fire = (type, x, y) => paths.dispatchEvent(new window.MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 }));
+
+    doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    doc.getElementById("zoomIn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const zoomed = App.internals.getZoom();
+    assert.ok(zoomed > 2, "zoomed in first: " + zoomed);
 
     fire("pointerdown", 200, 200);
     fire("pointermove", 260, 240);
     fire("pointerup", 260, 240);
     const transform = paths.getAttribute("transform");
-    assert.match(transform, /translate\(6[01]/, "panned: " + transform);
-    assert.strictEqual(App.internals.state.selected, before.selected, "pan did not select");
+    const tx = Number(transform.match(/translate\((-?[\d.]+)/)[1]);
+    assert.ok(tx < -20, "panned while zoomed: " + transform);
+    assert.strictEqual(App.internals.state.selected, before.selected, "pan did not select a district");
+    assert.strictEqual(doc.querySelectorAll("#map path.map-path.selected").length, 0, "nothing selected by dragging");
     doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
   });
 
