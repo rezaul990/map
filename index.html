@@ -10,7 +10,7 @@
 <!-- Bengali/Latin fonts are self-hosted (vendor/fonts): no external font CDN, works offline -->
 <link rel="preload" as="font" type="font/woff2" href="vendor/fonts/hind-siliguri-400-bengali.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="vendor/fonts/hind-siliguri-600-bengali.woff2" crossorigin>
-<link rel="stylesheet" href="css/style.css?v=7">
+<link rel="stylesheet" href="css/style.css?v=8">
 <!--
   Critical map geometry, inline on purpose.
 
@@ -120,6 +120,10 @@
           <input type="checkbox" id="labelToggle" checked>
           <span>জেলার নাম</span>
         </label>
+        <label class="switch">
+          <input type="checkbox" id="plazaToggle" checked>
+          <span>প্লাজা চিহ্ন</span>
+        </label>
         <button id="resetView" class="btn tiny" type="button" hidden>সব জেলা দেখান</button>
         <span class="labels-hint" id="labelsHint" hidden>নাম দেখতে জুম করুন বা <kbd>F</kbd> চাপুন</span>
       </div>
@@ -155,6 +159,7 @@
       <div class="map-legend">
         <span class="legend-title">লিজেন্ড — <strong id="legendMetric"></strong></span>
         <div class="legend" id="legend"></div>
+        <span class="legend-note" id="legendPlazaNote" hidden></span>
       </div>
     </section>
   </main>
@@ -197,10 +202,10 @@ if (typeof XLSX === "undefined") {
   document.write('<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"><\/script>');
 }
 </script>
-<script src="js/plaza.js?v=7"></script>
-<script src="js/data.js?v=7"></script>
-<script src="js/parse.js?v=7"></script>
-<script src="js/map.js?v=7"></script>
-<script src="js/app.js?v=7"></script>
+<script src="js/plaza.js?v=8"></script>
+<script src="js/data.js?v=8"></script>
+<script src="js/parse.js?v=8"></script>
+<script src="js/map.js?v=8"></script>
+<script src="js/app.js?v=8"></script>
 </body>
 </html>

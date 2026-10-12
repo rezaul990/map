@@ -22,6 +22,29 @@ try {
   process.exit(1);
 }
 const XLSX = require(path.join(ROOT, "vendor/xlsx.full.min.js"));
+const BD = require(path.join(ROOT, "js/data.js"));
+
+/** Rings of an SVG path (already in canvas coordinates) for point-in-polygon tests. */
+function pathRings(d) {
+  return String(d).split("M").slice(1).map(part =>
+    part.replace(/Z/gi, "").trim().split(/L/).map(pair => {
+      const [x, y] = pair.trim().split(/[\s,]+/).map(Number);
+      return { x, y };
+    }).filter(point => !isNaN(point.x) && !isNaN(point.y))
+  ).filter(ring => ring.length > 2);
+}
+
+function pointInRings(rings, x, y) {
+  let crossings = 0;
+  rings.forEach(ring => {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const a = ring[i];
+      const b = ring[j];
+      if ((a.y > y) !== (b.y > y) && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) crossings++;
+    }
+  });
+  return crossings % 2 === 1;
+}
 
 const MIME = {
   ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
@@ -168,6 +191,11 @@ function report() {
   check("shows the empty state before any upload", () => {
     assert.strictEqual(doc.getElementById("mapEmpty").hidden, false);
     assert.strictEqual(doc.getElementById("exportBtn").disabled, true);
+  });
+
+  check("no plaza dots before a dataset is loaded", () => {
+    assert.strictEqual(doc.querySelectorAll("#map .map-plaza").length, 0);
+    assert.strictEqual(doc.getElementById("legendPlazaNote").hidden, true);
   });
 
   const buffer = buildWorkbook().toString("base64");
@@ -323,6 +351,165 @@ function report() {
     toggle.dispatchEvent(new window.Event("change", { bubbles: true }));
   });
 
+  /* ----------------------------------------------------------- plaza markers */
+
+  check("every plaza of the report gets a dot inside its own district", () => {
+    const groups = Array.from(doc.querySelectorAll("#map .map-plaza-item"));
+    assert.strictEqual(groups.length, parsed.entries.length, "one dot per plaza");
+    assert.strictEqual(doc.querySelectorAll("#map .map-plaza").length, parsed.entries.length);
+
+    const expected = {};
+    parsed.entries.forEach(entry => {
+      const shape = BD.bdResolveDistrict(entry.districtFromFile) || entry.district;
+      expected[shape] = (expected[shape] || 0) + 1;
+    });
+
+    groups.forEach(group => {
+      const shape = group.dataset.shape;
+      assert.ok(shape, "dot carries its district: " + group.dataset.plaza);
+      expected[shape] -= 1;
+      const path_ = doc.querySelector(`#map path.map-path[data-id="${shape}"]`);
+      assert.ok(path_, "district path exists for " + shape);
+      const rings = pathRings(path_.getAttribute("d"));
+      const dot = group.querySelector("circle.map-plaza");
+      const x = Number(dot.getAttribute("cx"));
+      const y = Number(dot.getAttribute("cy"));
+      assert.ok(pointInRings(rings, x, y), `${group.dataset.plaza} sits inside ${shape}`);
+    });
+    Object.keys(expected).forEach(shape => {
+      assert.strictEqual(expected[shape], 0, `${shape} dot count matches its plazas`);
+    });
+
+    // dots of the same district must not overlap each other
+    const byShape = {};
+    groups.forEach(group => (byShape[group.dataset.shape] || (byShape[group.dataset.shape] = [])).push(group));
+    Object.keys(byShape).forEach(shape => {
+      const dots = byShape[shape].map(group => {
+        const dot = group.querySelector("circle.map-plaza");
+        return { r: Number(dot.getAttribute("r")), x: Number(dot.getAttribute("cx")), y: Number(dot.getAttribute("cy")) };
+      });
+      dots.forEach((a, i) => dots.slice(i + 1).forEach(b => {
+        const gap = Math.hypot(a.x - b.x, a.y - b.y);
+        assert.ok(gap >= a.r + b.r - 0.01, `${shape}: dots overlap (${gap.toFixed(2)} < ${(a.r + b.r).toFixed(2)})`);
+      }));
+    });
+  });
+
+  check("dots sit in the same view transform as the district shapes", () => {
+    const group = doc.querySelector("#map .map-plazas");
+    assert.ok(group, "plaza layer exists");
+    assert.strictEqual(group.parentNode.getAttribute("class"), "map-view");
+    const dot = doc.querySelector("#map .map-plaza");
+    assert.ok(dot.getAttribute("vector-effect"), "dot outline keeps its width when zoomed");
+  });
+
+  check("zoomed-in dots keep a steady screen size instead of becoming blobs", () => {
+    const first = () => doc.querySelector("#map .map-plaza-item circle.map-plaza");
+    const before = Number(first().getAttribute("r"));
+    const zoomIn = doc.getElementById("zoomIn");
+    for (let i = 0; i < 3; i++) zoomIn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const after = Number(first().getAttribute("r"));
+    assert.ok(after > 0, "dots never vanish");
+    assert.ok(after <= before + 0.001, `dots shrink in map units when zoomed (${before} -> ${after})`);
+    doc.getElementById("zoomReset").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.ok(Math.abs(Number(first().getAttribute("r")) - before) < 0.001, "dots return to their fitted size");
+  });
+
+  check("plaza dots can be hidden and brought back", () => {
+    const toggle = doc.getElementById("plazaToggle");
+    const note = doc.getElementById("legendPlazaNote");
+    assert.strictEqual(note.hidden, false);
+    assert.ok(note.textContent.includes(String(parsed.entries.length)), "note counts the plazas: " + note.textContent);
+    toggle.checked = false;
+    toggle.dispatchEvent(new window.Event("change", { bubbles: true }));
+    assert.strictEqual(doc.querySelector("#map .map-plazas").style.display, "none");
+    assert.strictEqual(note.hidden, true);
+    assert.strictEqual(doc.querySelectorAll("#map .map-plaza").length, parsed.entries.length, "dots stay in the DOM");
+    toggle.checked = true;
+    toggle.dispatchEvent(new window.Event("change", { bubbles: true }));
+    assert.strictEqual(doc.querySelector("#map .map-plazas").style.display, "");
+  });
+
+  /** Where a dot sits, in the coordinates the pointer handler works in (fit view: 1:1). */
+  const dotPoint = group => {
+    const dot = group.querySelector("circle.map-plaza");
+    return { x: Number(dot.getAttribute("cx")), y: Number(dot.getAttribute("cy")), dot };
+  };
+  const pointAt = group => group.dispatchEvent(new window.MouseEvent("pointermove", {
+    bubbles: true, ...dotPoint(group), clientX: dotPoint(group).x, clientY: dotPoint(group).y
+  }));
+
+  check("hovering a dot names the plaza, clicking it opens that district", () => {
+    const group = doc.querySelector("#map .map-plaza-item");
+    const plaza = group.dataset.plaza;
+    const shape = group.dataset.shape;
+    const dot = group.querySelector("circle.map-plaza");
+
+    pointAt(group);
+    const tooltip = doc.querySelector(".map-tooltip");
+    assert.strictEqual(tooltip.style.opacity, "1");
+    assert.ok(tooltip.textContent.includes(plaza), "tooltip names the plaza: " + tooltip.textContent);
+    assert.ok(tooltip.querySelectorAll(".tt-value").length >= 1, "tooltip carries a value");
+    assert.ok(dot.classList.contains("lit"), "the hovered dot is lit");
+    const litFill = dot.getAttribute("fill");
+
+    doc.querySelector("#map .map-plazas").dispatchEvent(new window.MouseEvent("pointerleave", { bubbles: false }));
+    assert.strictEqual(tooltip.style.opacity, "0");
+    assert.ok(!dot.classList.contains("lit"), "the dot is no longer lit");
+
+    pointAt(group);
+    group.dispatchEvent(new window.MouseEvent("click", { bubbles: true, ...dotPoint(group), clientX: dotPoint(group).x, clientY: dotPoint(group).y }));
+    assert.ok(doc.getElementById("drawer").classList.contains("open"), "drawer opens");
+    assert.strictEqual(doc.getElementById("drawerTitle").textContent, BD.bdDistrictInfo(shape).bn || shape);
+    const litRows = doc.querySelectorAll("#drawerList .drawer-row.lit");
+    assert.strictEqual(litRows.length, 1, "the clicked plaza is marked in the list");
+    assert.strictEqual(litRows[0].dataset.plaza, plaza);
+    assert.strictEqual(dot.getAttribute("fill"), litFill, "the clicked dot stays lit");
+    doc.getElementById("drawerClose").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    doc.querySelector("#map .map-plazas").dispatchEvent(new window.MouseEvent("pointerleave", { bubbles: false }));
+    assert.ok(!dot.classList.contains("lit"), "closing the drawer clears the highlight");
+  });
+
+  check("in a dense district the dot nearest the pointer is the one named", () => {
+    const counts = {};
+    doc.querySelectorAll("#map .map-plaza-item").forEach(group => {
+      counts[group.dataset.shape] = (counts[group.dataset.shape] || 0) + 1;
+    });
+    const busiest = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+    const dots = Array.from(doc.querySelectorAll(`#map .map-plaza-item[data-shape="${busiest}"]`));
+    assert.ok(dots.length >= 12, `dense district is ${busiest} with ${dots.length} dots`);
+    const a = dotPoint(dots[0]);
+    const b = dots.reduce((best, group, index) => {
+      if (index === 0) return best;
+      const point = dotPoint(group);
+      const d = Math.hypot(point.x - a.x, point.y - a.y);
+      return !best || d < best.d ? { group, point, d } : best;
+    }, null);
+    assert.ok(b && b.d < 20, "neighbour found " + (b && b.d));
+
+    const nearB = { x: a.x + (b.point.x - a.x) * 0.62, y: a.y + (b.point.y - a.y) * 0.62 };
+    const layer = doc.querySelector("#map .map-plazas");
+    layer.dispatchEvent(new window.MouseEvent("pointermove", {
+      bubbles: true, clientX: nearB.x, clientY: nearB.y
+    }));
+    const tooltip = doc.querySelector(".map-tooltip");
+    assert.ok(tooltip.style.opacity === "1", "a dot is hovered");
+    assert.ok(tooltip.textContent.includes(b.group.dataset.plaza),
+      `nearest dot wins: ${b.group.dataset.plaza} expected, got ${tooltip.textContent.slice(0, 60)}`);
+    layer.dispatchEvent(new window.MouseEvent("pointerleave", { bubbles: false }));
+    assert.strictEqual(tooltip.style.opacity, "0");
+  });
+
+  check("hovering a district still works alongside the plaza dots", () => {
+    const path = doc.querySelector('#map path.map-path[data-id="Dhaka"]');
+    assert.ok(path, "Dhaka path exists");
+    path.dispatchEvent(new window.MouseEvent("pointerenter", { bubbles: true, clientX: 100, clientY: 100 }));
+    const tooltip = doc.querySelector(".map-tooltip");
+    assert.strictEqual(tooltip.style.opacity, "1");
+    assert.ok(tooltip.textContent.includes("ঢাকা"), "tooltip text: " + tooltip.textContent);
+    path.dispatchEvent(new window.MouseEvent("pointerleave", { bubbles: true }));
+  });
+
   check("hovering a district shows a tooltip with its value", () => {
     const path = doc.querySelector('#map path.map-path[data-id="Dhaka"]');
     assert.ok(path, "Dhaka path exists");
@@ -368,6 +555,22 @@ function report() {
     assert.ok(!/stroke="#38bdf8"/.test(exported.markup), "no selection outline in the export");
     doc.getElementById("drawerClose").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     assert.strictEqual(doc.querySelectorAll("#map path.map-path.dimmed").length, 0, "screen restored");
+  });
+
+  check("exports carry the plaza dots (and drop them when they are switched off)", () => {
+    const dots = doc.querySelectorAll("#map .map-plaza").length;
+    assert.ok(dots > 0, "dots on the live map");
+    const withDots = window.eval(`SVGMap.buildExportSVG({ title: "t", legend: [], background: "#131c2e" })`);
+    assert.strictEqual((withDots.markup.match(/<circle/g) || []).length, dots, "one circle per plaza in the export");
+    assert.ok(!/map-plaza-hit/.test(withDots.markup), "the invisible hover twins are not exported");
+
+    const toggle = doc.getElementById("plazaToggle");
+    toggle.checked = false;
+    toggle.dispatchEvent(new window.Event("change", { bubbles: true }));
+    const without = window.eval(`SVGMap.buildExportSVG({ title: "t", legend: [], background: "#131c2e" })`);
+    assert.ok(!/class="map-plaza"/.test(without.markup), "no dots when the layer is off");
+    toggle.checked = true;
+    toggle.dispatchEvent(new window.Event("change", { bubbles: true }));
   });
 
   check("export SVG is self-contained and carries legend + labels", () => {
@@ -816,8 +1019,16 @@ function report() {
 
   check("theme toggle flips the colour scheme", () => {
     const before = doc.documentElement.dataset.theme;
+    const dot = doc.querySelector("#map .map-plaza");
+    const dotBefore = dot.getAttribute("fill");
     doc.getElementById("themeToggle").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     assert.notStrictEqual(doc.documentElement.dataset.theme, before);
+    // the dots are theme foreground: they must follow the theme, not keep the old paint
+    const dotAfter = doc.querySelector("#map .map-plaza").getAttribute("fill");
+    assert.notStrictEqual(dotAfter, dotBefore, "plaza dots repaint with the theme");
+    const token = window.getComputedStyle(doc.documentElement).getPropertyValue("--text").trim();
+    assert.strictEqual(dotAfter, token, "dots use the theme's text colour");
+    doc.getElementById("themeToggle").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
   });
 
   {

@@ -16,10 +16,16 @@ const SVGMap = (() => {
   let svg = null;
   let mapGroup = null;
   let pathGroup = null;
+  let plazaGroup = null;
   let labelGroup = null;
   let tooltip = null;
   let hooks = {};
   let items = [];
+  let plazaList = [];
+  let plazaItems = [];
+  let plazasVisible = true;
+  let hoverPlazaId = null;
+  let litPlazaId = null;
   let bounds = null;
   let width = BASE_WIDTH;
   let height = 1000;
@@ -32,6 +38,27 @@ const SVGMap = (() => {
   /* zoom / pan: 1 = the whole map fits the panel, below that it shrinks with a margin */
   const MIN_SCALE = 0.4;
   const MAX_SCALE = 10;
+
+  /*
+   * Plaza markers.
+   *
+   * The report carries no latitude/longitude, so a plaza cannot be pinned to a real
+   * street address. Each plaza of a district is therefore given a deterministic slot
+   * inside that district outline: candidate points on a grid, then farthest-point
+   * sampling, so the dots spread over the district, never stack on each other and stay
+   * the same from one report to the next (same plaza list in -> same layout out).
+   */
+  const PLAZA = {
+    dense: 20,          // candidate points per plaza (grid resolution)
+    minStep: 0.7,       // grid step floor, map units
+    pad: 0.5,           // keep dots off the district border, map units
+    spacing: 0.5,       // radius <= half the distance to the closest neighbour
+    minRadius: 1,
+    maxRadius: 3,
+    loneRadius: 2.2,    // single-plaza districts have no neighbour to respect
+    screenRadius: 3.2,  // target radius in device px (dots stop growing when zoomed in)
+    hitScale: 2.2       // invisible hover target, relative to the dot
+  };
   let view = { k: 1, x: 0, y: 0 };
   let drag = null;
   let pointers = new Map();
@@ -97,7 +124,10 @@ const SVGMap = (() => {
       getLabel: options.getLabel || (() => ""),
       getTooltip: options.getTooltip || (() => ""),
       onSelect: options.onSelect || (() => {}),
-      onZoom: options.onZoom || (() => {})
+      onZoom: options.onZoom || (() => {}),
+      getPlazaStyle: options.getPlazaStyle || (() => ({})),
+      getPlazaTooltip: options.getPlazaTooltip || (() => ""),
+      onPlazaSelect: options.onPlazaSelect || (() => {})
     };
     container.innerHTML = "";
     container.classList.add("has-svg");
@@ -116,9 +146,12 @@ const SVGMap = (() => {
     mapGroup.setAttribute("class", "map-view");
     pathGroup = document.createElementNS(NS, "g");
     pathGroup.setAttribute("class", "map-paths");
+    plazaGroup = document.createElementNS(NS, "g");
+    plazaGroup.setAttribute("class", "map-plazas");
     labelGroup = document.createElementNS(NS, "g");
     labelGroup.setAttribute("class", "map-labels");
     mapGroup.appendChild(pathGroup);
+    mapGroup.appendChild(plazaGroup);
     mapGroup.appendChild(labelGroup);
     svg.appendChild(mapGroup);
 
@@ -416,10 +449,10 @@ const SVGMap = (() => {
 
   function setData(features) {
     items = [];
-    bounds = computeBounds(features);
-    width = BASE_WIDTH;
-    height = Math.round(BASE_WIDTH * (bounds.maxLat - bounds.minLat) /
-      ((bounds.maxLon - bounds.minLon) * Math.cos(midLat() * Math.PI / 180)));
+    const proj = makeProjection(features);
+    bounds = proj.bounds;
+    width = proj.width;
+    height = proj.height;
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
     pathGroup.innerHTML = "";
@@ -477,6 +510,7 @@ const SVGMap = (() => {
     });
 
     renderLabels();
+    renderPlazas();
     refresh();
     view = { k: 1, x: 0, y: 0 };
     applyView();
@@ -577,6 +611,8 @@ const SVGMap = (() => {
       label.style.display = ((!labelsVisible && !active) || (tiny && !active)) ? "none" : "";
       applyLabelStyle(label, parseFloat(label.dataset.size) || 10, active);
     });
+
+    refreshPlazas();
   }
 
   function regionAria(feature, id) {
@@ -648,13 +684,28 @@ const SVGMap = (() => {
     return (bounds.minLat + bounds.maxLat) / 2;
   }
 
-  function project(lon, lat) {
-    const lonSpan = bounds.maxLon - bounds.minLon;
-    const latSpan = bounds.maxLat - bounds.minLat;
+  /** Projection for a feature set: the same maths setData() uses for the live map. */
+  function makeProjection(features) {
+    const box = computeBounds(features);
     return {
-      x: ((lon - bounds.minLon) / lonSpan) * width,
-      y: ((bounds.maxLat - lat) / latSpan) * height
+      bounds: box,
+      width: BASE_WIDTH,
+      height: Math.round(BASE_WIDTH * (box.maxLat - box.minLat) /
+        ((box.maxLon - box.minLon) * Math.cos(((box.minLat + box.maxLat) / 2) * Math.PI / 180)))
     };
+  }
+
+  function projectIn(proj, lon, lat) {
+    const lonSpan = proj.bounds.maxLon - proj.bounds.minLon;
+    const latSpan = proj.bounds.maxLat - proj.bounds.minLat;
+    return {
+      x: ((lon - proj.bounds.minLon) / lonSpan) * proj.width,
+      y: ((proj.bounds.maxLat - lat) / latSpan) * proj.height
+    };
+  }
+
+  function project(lon, lat) {
+    return projectIn({ bounds, width, height }, lon, lat);
   }
 
   function eachRing(geometry, fn) {
@@ -736,6 +787,328 @@ const SVGMap = (() => {
     return c;
   }
 
+  /* ---------------------------------------------------------- plaza markers */
+
+  /** Projected rings of one feature, ready for point-in-polygon tests. */
+  function projectedRings(feature, proj) {
+    const rings = [];
+    eachRing(feature.geometry, ring => {
+      if (!ring || ring.length < 3) return;
+      rings.push(ring.map(point => projectIn(proj, point[0], point[1])));
+    });
+    return rings;
+  }
+
+  function ringsBox(rings) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    rings.forEach(ring => ring.forEach(point => {
+      if (point.x < minX) minX = point.x;
+      if (point.x > maxX) maxX = point.x;
+      if (point.y < minY) minY = point.y;
+      if (point.y > maxY) maxY = point.y;
+    }));
+    return { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
+  }
+
+  /** Even-odd point-in-polygon across every ring: holes and islands included. */
+  function pointInRings(rings, x, y) {
+    let crossings = 0;
+    for (let r = 0; r < rings.length; r++) {
+      const ring = rings[r];
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[i];
+        const b = ring[j];
+        if ((a.y > y) !== (b.y > y) && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) crossings++;
+      }
+    }
+    return crossings % 2 === 1;
+  }
+
+  /** Inside the district and at least `margin` away from every edge. */
+  function pointInRingsWithMargin(rings, x, y, margin) {
+    if (!pointInRings(rings, x, y)) return false;
+    if (!margin) return true;
+    const o = margin * 0.7;
+    return pointInRings(rings, x + margin, y) && pointInRings(rings, x - margin, y) &&
+      pointInRings(rings, x, y + margin) && pointInRings(rings, x, y - margin) &&
+      pointInRings(rings, x + o, y + o) && pointInRings(rings, x - o, y + o) &&
+      pointInRings(rings, x + o, y - o) && pointInRings(rings, x - o, y - o);
+  }
+
+  /** Candidate slots inside one district: a grid that gets denser as it needs more dots. */
+  function candidatePoints(rings, box, count) {
+    const area = Math.max(1, box.w * box.h);
+    const step = Math.max(PLAZA.minStep, Math.sqrt(area / (count * PLAZA.dense)));
+    const margins = [
+      Math.min(PLAZA.pad, step * 0.6),
+      Math.min(PLAZA.pad, step * 0.6) * 0.4,
+      0
+    ];
+    for (let pass = 0; pass < margins.length; pass++) {
+      const margin = margins[pass];
+      const points = [];
+      for (let x = box.minX + step / 2; x < box.maxX; x += step) {
+        for (let y = box.minY + step / 2; y < box.maxY; y += step) {
+          if (pointInRingsWithMargin(rings, x, y, margin)) points.push({ x, y });
+        }
+      }
+      if (points.length) return points;
+    }
+    // degenerate district (very thin or a speck): fall back to its own middle
+    const cx = (box.minX + box.maxX) / 2;
+    const cy = (box.minY + box.maxY) / 2;
+    return pointInRings(rings, cx, cy) ? [{ x: cx, y: cy }] : [];
+  }
+
+  /**
+   * Farthest-point sampling: pick the candidate nearest the middle first, then always
+   * the candidate that is farthest from everything picked so far. Deterministic, and it
+   * spreads the dots over the whole district instead of letting them bunch up.
+   */
+  function spreadPoints(candidates, count, box) {
+    if (candidates.length <= count) return candidates.slice();
+    const cx = (box.minX + box.maxX) / 2;
+    const cy = (box.minY + box.maxY) / 2;
+    let seed = 0;
+    let best = Infinity;
+    candidates.forEach((point, index) => {
+      const d = (point.x - cx) * (point.x - cx) + (point.y - cy) * (point.y - cy);
+      if (d < best) { best = d; seed = index; }
+    });
+
+    const chosen = [candidates[seed]];
+    const dist = candidates.map(point => Math.hypot(point.x - candidates[seed].x, point.y - candidates[seed].y));
+    dist[seed] = -1;
+    while (chosen.length < count) {
+      let pick = -1;
+      let farthest = -1;
+      for (let i = 0; i < dist.length; i++) {
+        if (dist[i] > farthest) { farthest = dist[i]; pick = i; }
+      }
+      if (pick < 0) break;
+      chosen.push(candidates[pick]);
+      dist[pick] = -1;
+      for (let i = 0; i < dist.length; i++) {
+        if (dist[i] < 0) continue;
+        const d = Math.hypot(candidates[i].x - candidates[pick].x, candidates[i].y - candidates[pick].y);
+        if (d < dist[i]) dist[i] = d;
+      }
+    }
+    return chosen;
+  }
+
+  /** Dot radius that keeps the closest pair of dots from touching. */
+  function plazaRadius(points) {
+    if (points.length < 2) return PLAZA.loneRadius;
+    let closest = Infinity;
+    for (let i = 0; i < points.length; i++) {
+      for (let j = i + 1; j < points.length; j++) {
+        const d = Math.hypot(points[i].x - points[j].x, points[i].y - points[j].y);
+        if (d < closest) closest = d;
+      }
+    }
+    if (!isFinite(closest)) return PLAZA.loneRadius;
+    return Math.max(PLAZA.minRadius, Math.min(PLAZA.maxRadius, closest * PLAZA.spacing));
+  }
+
+  /**
+   * Positions for every plaza, grouped per district.
+   * @param {Array} features geojson features (one per district)
+   * @param {Object} groups {shapeName: [plaza, ...]} - order is kept in the result
+   * @returns {Map} shapeName -> {radius, points:[{x,y}]}
+   */
+  function planPlazaPositions(features, groups) {
+    const proj = makeProjection(features || []);
+    const plan = new Map();
+    (features || []).forEach(feature => {
+      const shape = feature.properties.shapeName;
+      const names = groups ? groups[shape] : null;
+      if (!names || !names.length) return;
+      const rings = projectedRings(feature, proj);
+      if (!rings.length) return;
+      const box = ringsBox(rings);
+      const points = spreadPoints(candidatePoints(rings, box, names.length), names.length, box);
+      if (!points.length) return;
+      plan.set(shape, { radius: plazaRadius(points), points });
+    });
+    return plan;
+  }
+
+  /** Rebuild the marker layer from the last list handed to setPlazas(). */
+  function renderPlazas() {
+    if (!plazaGroup) return;
+    plazaGroup.innerHTML = "";
+    plazaItems = [];
+    if (!plazaList.length || !items.length) return;
+
+    const features = items.map(item => item.feature);
+    const known = new Set(items.map(item => item.id));
+    const groups = {};
+    plazaList.forEach(entry => {
+      const shape = entry.shape;
+      if (!shape || !known.has(shape)) return;
+      (groups[shape] || (groups[shape] = [])).push(entry);
+    });
+    // name order, so the same list always produces the same picture
+    Object.keys(groups).forEach(shape => {
+      groups[shape].sort((a, b) => String(a.label).localeCompare(String(b.label)));
+    });
+
+    const plan = planPlazaPositions(features, groups);
+
+    Object.keys(groups).forEach(shape => {
+      const layout = plan.get(shape);
+      if (!layout) return;
+      groups[shape].forEach((entry, index) => {
+        const point = layout.points[index];
+        if (!point) return;
+
+        const node = document.createElementNS(NS, "g");
+        node.setAttribute("class", "map-plaza-item");
+        node.dataset.plaza = entry.id;
+        node.dataset.shape = shape;
+
+        // invisible, larger twin: a 2px dot is not a comfortable hover target
+        const hit = document.createElementNS(NS, "circle");
+        hit.setAttribute("class", "map-plaza-hit");
+        hit.setAttribute("cx", point.x.toFixed(2));
+        hit.setAttribute("cy", point.y.toFixed(2));
+        // painted, but invisible: `fill="transparent"` is not hit-testable in every engine
+        hit.setAttribute("fill", "#000000");
+        hit.setAttribute("fill-opacity", "0");
+
+        const dot = document.createElementNS(NS, "circle");
+        dot.setAttribute("class", "map-plaza");
+        dot.setAttribute("cx", point.x.toFixed(2));
+        dot.setAttribute("cy", point.y.toFixed(2));
+        dot.setAttribute("vector-effect", "non-scaling-stroke");
+
+        node.appendChild(hit);
+        node.appendChild(dot);
+        plazaGroup.appendChild(node);
+
+        entry.shape = shape;
+        plazaItems.push({
+          id: entry.id,
+          shape,
+          entry,
+          node,
+          dot,
+          hit,
+          x: point.x,
+          y: point.y,
+          baseRadius: layout.radius,
+          styled: ""
+        });
+      });
+    });
+
+    attachPlazaPicker();
+  }
+
+  /**
+   * One pointer handler for the whole layer.
+   *
+   * The hit areas have to be much larger than a 2px dot, so in a dense district
+   * (Dhaka alone holds 79 plazas) they overlap, and letting the browser pick whichever
+   * shape is on top would name the wrong plaza. Instead the layer resolves the dot the
+   * pointer is *nearest to* — that is the one the user means.
+   */
+  function nearestPlaza(event) {
+    if (!plazaItems.length) return null;
+    const point = toSvgCoords(event);
+    const x = (point.x - view.x) / view.k;
+    const y = (point.y - view.y) / view.k;
+    let best = null;
+    let bestDistance = Infinity;
+    for (let i = 0; i < plazaItems.length; i++) {
+      const item = plazaItems[i];
+      const d = Math.hypot(item.x - x, item.y - y);
+      if (d < bestDistance) { bestDistance = d; best = item; }
+    }
+    if (!best) return null;
+    const reach = Number(best.hit.getAttribute("r")) || 0;
+    // inside the dot's own hover target, and not simply the closest of two far-away dots
+    return bestDistance <= reach + (view.k > 0 ? 2 / view.k : 0) ? best : null;
+  }
+
+  function hoverPlaza(item, event) {
+    const id = item ? item.id : null;
+    if (id === hoverPlazaId) {
+      if (item) moveTooltip(event);
+      return;
+    }
+    hoverPlazaId = id;
+    refresh();
+    if (item) showTooltip(event, hooks.getPlazaTooltip(item.entry));
+    else hideTooltip();
+  }
+
+  function attachPlazaPicker() {
+    if (!plazaGroup || plazaGroup.dataset.picker === "1") return;
+    plazaGroup.dataset.picker = "1";
+
+    plazaGroup.addEventListener("pointermove", event => hoverPlaza(nearestPlaza(event), event));
+    plazaGroup.addEventListener("pointerleave", () => hoverPlaza(null));
+    plazaGroup.addEventListener("pointerdown", event => {
+      if (event.pointerType !== "touch") return;
+      const item = nearestPlaza(event);
+      if (item) showTooltip(event, hooks.getPlazaTooltip(item.entry));
+    });
+    plazaGroup.addEventListener("click", event => {
+      if (dragged) return; // the pointer was panning, not picking a plaza
+      const item = nearestPlaza(event);
+      if (!item) return;
+      event.stopPropagation();
+      hooks.onPlazaSelect(item.entry);
+    });
+  }
+
+  function setPlazas(list) {
+    plazaList = Array.isArray(list) ? list.filter(entry => entry && entry.id && entry.shape) : [];
+    renderPlazas();
+    refresh();
+  }
+
+  /** Dot size and paint. Only dots whose state actually changed are touched. */
+  function refreshPlazas() {
+    if (!plazaGroup) return;
+    const visible = plazasVisible && plazaItems.length > 0;
+    const display = visible ? "" : "none";
+    if (plazaGroup.style.display !== display) plazaGroup.style.display = display;
+    if (!plazaItems.length) return;
+
+    const box = metrics();
+    const zoom = plainRender ? 1 : view.k;
+    // dots keep a steady size on screen; they only shrink in map units, never grow into blobs
+    const perUnit = 1 / Math.max(0.0001, box.scale * zoom);
+    const screenRadius = PLAZA.screenRadius * perUnit;
+    const activeSelected = plainRender ? null : selectedId;
+    const activeHover = plainRender ? null : hoverPlazaId;
+    const activeLit = plainRender ? null : litPlazaId;
+
+    plazaItems.forEach(item => {
+      const hot = item.id === activeHover || item.id === activeLit;
+      const dimmed = activeSelected ? item.shape !== activeSelected : false;
+      const radius = Math.min(item.baseRadius, screenRadius) * (hot ? 1.5 : 1);
+      const style = hooks.getPlazaStyle(item.entry) || {};
+      const key = [radius.toFixed(2), hot ? 1 : 0, dimmed ? 1 : 0, style.fill, style.stroke, style.fillOpacity, style.strokeOpacity].join("|");
+      if (key === item.styled) return;
+      item.styled = key;
+
+      item.dot.setAttribute("r", radius.toFixed(2));
+      item.hit.setAttribute("r", (radius * PLAZA.hitScale).toFixed(2));
+      item.dot.setAttribute("fill", hot ? accent : (style.fill || "#e2e8f0"));
+      item.dot.setAttribute("fill-opacity", dimmed ? 0.25 : (style.fillOpacity === undefined ? 1 : style.fillOpacity));
+      item.dot.setAttribute("stroke", hot ? "#ffffff" : (style.stroke || "#0f172a"));
+      item.dot.setAttribute("stroke-opacity", hot ? 1 : (style.strokeOpacity === undefined ? 0.85 : style.strokeOpacity));
+      item.dot.setAttribute("stroke-width", hot ? 1.6 : (style.strokeWidth === undefined ? 1 : style.strokeWidth));
+      item.dot.classList.toggle("lit", hot);
+      // the dot under the pointer sits on top of its neighbours
+      if (hot && plazaGroup.lastElementChild !== item.node) plazaGroup.appendChild(item.node);
+    });
+  }
+
   /* ----------------------------------------------------------------- export */
 
   /**
@@ -811,11 +1184,12 @@ const SVGMap = (() => {
       }, clip(opts.note, 40)));
     }
 
-    // copy the live map (paths + labels) with resolved inline styles
-    const live = svg.querySelectorAll("path, text");
+    // copy the live map (paths + labels + plaza dots) with resolved inline styles
+    const live = svg.querySelectorAll("path, text, circle.map-plaza");
     const group = document.createElementNS(NS, "g");
     const cloned = [];
     live.forEach(node => {
+      if (!plazasVisible && node.classList && node.classList.contains("map-plaza")) return;
       const copy = node.cloneNode(true);
       copy.removeAttribute("tabindex");
       copy.removeAttribute("role");
@@ -899,6 +1273,11 @@ const SVGMap = (() => {
     setHovered(id) { hoverId = id; refresh(); },
     getSelected() { return selectedId; },
     setLabelsVisible(visible) { labelsVisible = visible; refresh(); },
+    setPlazas,
+    setPlazasVisible(visible) { plazasVisible = !!visible; refresh(); },
+    setPlazaHighlight(id) { litPlazaId = id || null; refresh(); },
+    getPlazaCount() { return plazaItems.length; },
+    planPlazaPositions,
     applyBox,
     getSize,
     buildExportSVG

@@ -83,6 +83,8 @@ const App = (() => {
     sort: "name-asc",
     selected: null,
     showLabels: true,
+    showPlazas: true,
+    litPlaza: null,
     fileName: "",
     savedAt: null,
     percentScale: 1,
@@ -98,6 +100,7 @@ const App = (() => {
   async function init() {
     const prefs = loadPrefs();
     applyTheme(prefs.theme || "dark");
+    state.showPlazas = prefs.showPlazas === undefined ? true : !!prefs.showPlazas;
     bindStaticEvents();
     initMap();
 
@@ -150,6 +153,9 @@ const App = (() => {
       getLabel: featureLabel,
       getTooltip: featureTooltip,
       onSelect: selectDistrict,
+      getPlazaStyle: plazaStyle,
+      getPlazaTooltip: plazaTooltip,
+      onPlazaSelect: selectPlaza,
       onZoom: (scale, zoomed, namesHidden) => {
         const level = document.getElementById("zoomLevel");
         if (level) level.textContent = Math.round(scale * 100) + "%";
@@ -198,10 +204,23 @@ const App = (() => {
       savePrefs({ showLabels: state.showLabels });
     });
 
+    const plazaToggle = document.getElementById("plazaToggle");
+    if (plazaToggle) {
+      plazaToggle.checked = state.showPlazas;
+      plazaToggle.addEventListener("change", event => {
+        state.showPlazas = event.target.checked;
+        SVGMap.setPlazasVisible(state.showPlazas);
+        savePrefs({ showPlazas: state.showPlazas });
+        renderLegend();
+      });
+    }
+
     document.getElementById("themeToggle").addEventListener("click", () => {
       const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
       applyTheme(next);
       savePrefs({ theme: next });
+      // repaint so theme-dependent paint (the plaza dots) follows the new theme
+      SVGMap.refresh();
     });
 
     document.getElementById("mapExpand").addEventListener("click", () => toggleExpanded());
@@ -228,6 +247,17 @@ const App = (() => {
 
     document.getElementById("clearBtn").addEventListener("click", clearDataset);
     document.getElementById("demoBtn").addEventListener("click", loadDemoData);
+
+    // hovering a plaza row in the drawer lights up its dot on the map
+    const drawerList = document.getElementById("drawerList");
+    if (drawerList) {
+      drawerList.addEventListener("pointerover", event => {
+        const row = event.target.closest ? event.target.closest(".drawer-row") : null;
+        if (!row) return;
+        SVGMap.setPlazaHighlight(row.dataset.plaza || null);
+      });
+      drawerList.addEventListener("pointerleave", () => SVGMap.setPlazaHighlight(null));
+    }
 
     // export menu
     const exportBtn = document.getElementById("exportBtn");
@@ -403,6 +433,7 @@ const App = (() => {
     document.getElementById("clearBtn").disabled = false;
 
     if (state.selected && !state.stats[state.selected]) clearSelection();
+    syncPlazaMarkers();
     renderAll();
     updateStatusLine(meta);
   }
@@ -438,8 +469,10 @@ const App = (() => {
     state.fileName = "";
     state.savedAt = null;
     state.columns = null;
+    state.litPlaza = null;
     localStorage.removeItem(STORAGE_KEY);
     clearSelection();
+    SVGMap.setPlazas([]);
     document.getElementById("exportBtn").disabled = true;
     document.getElementById("clearBtn").disabled = true;
     document.getElementById("mapEmpty").hidden = false;
@@ -716,6 +749,82 @@ const App = (() => {
     return `<strong>${escapeHtml(info.bn)} <span class="tt-en">${escapeHtml(info.en)}</span></strong>${rows.join("")}`;
   }
 
+  /* ---------------------------------------------------------- plaza markers */
+
+  /*
+   * One dot per plaza, placed inside its district outline (the report has no
+   * coordinates). The dots carry the district colour story: they stay neutral and
+   * light up on hover/selection, so the fill still says "how is this district doing"
+   * while the dots say "where are the plazas".
+   */
+  function plazaStyle() {
+    const colors = themeColors();
+    // the design tokens are the source of truth; when they cannot be read (no
+    // stylesheet, or a bare document) fall back to the theme attribute
+    const light = document.documentElement.dataset.theme === "light";
+    return {
+      fill: colors.text || (light ? "#0f172a" : "#f1f5f9"),
+      fillOpacity: 0.95,
+      stroke: colors.background || (light ? "#f8fafc" : "#0f172a"),
+      strokeOpacity: 0.9,
+      strokeWidth: 0.9
+    };
+  }
+
+  function plazaTooltip(entry) {
+    const data = entry.data || {};
+    const where = [entry.area, entry.division].filter(Boolean).join(" • ");
+    const rows = [
+      `<span class="tt-value">${formatPercent(data.qtyPct)}</span><span class="tt-hint">Collectable Vs. Collected Acc Qty (%)</span>`,
+      `<span class="tt-columns">Collectable Amt.: ${columnValue("collectableAmt", data.collectableAmt)} • Collected Amt.: ${columnValue("collectedAmt", data.collectedAmt)}</span>`,
+      `<span class="tt-columns">Collectable Vs. Collected Amt.: ${formatPercent(data.amtPct)} • Overdue Incr./(Decr.): ${formatAmount(data.overdueChange, true)}</span>`,
+      `<span class="tt-meta">${escapeHtml(where)}</span>`
+    ];
+    return `<strong>${escapeHtml(entry.plaza)}</strong>${rows.join("")}`;
+  }
+
+  /** Feed the current dataset to the marker layer (called on every data change). */
+  function syncPlazaMarkers() {
+    const list = state.entries
+      .filter(entry => entry.district)
+      .map(entry => ({
+        id: entry.plaza,
+        label: entry.plaza,
+        shape: entry.district,
+        plaza: entry.plaza,
+        area: entry.area || "",
+        division: entry.division || "",
+        data: entry.data
+      }));
+    SVGMap.setPlazas(list);
+    SVGMap.setPlazasVisible(state.showPlazas);
+  }
+
+  /** A dot was clicked: open its district and keep the dot lit. */
+  function selectPlaza(entry) {
+    if (!entry || !entry.shape) return;
+    state.litPlaza = entry.id;
+    if (state.selected !== entry.shape) selectDistrict(entry.shape);
+    SVGMap.setPlazaHighlight(state.litPlaza);
+    markLitPlaza();
+    showToast(`${entry.plaza} — ${bdDistrictInfo(entry.shape).bn || entry.shape}`);
+  }
+
+  /** Highlight the drawer row of the lit plaza (and scroll it into view when possible). */
+  function markLitPlaza() {
+    const listEl = document.getElementById("drawerList");
+    if (!listEl) return;
+    let target = null;
+    Array.prototype.forEach.call(listEl.querySelectorAll(".drawer-row"), row => {
+      const lit = !!state.litPlaza && row.dataset.plaza === state.litPlaza;
+      row.classList.toggle("lit", lit);
+      if (lit) target = row;
+    });
+    if (target && typeof target.scrollIntoView === "function") {
+      try { target.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (err) { /* jsdom */ }
+    }
+  }
+
   function metricValueFor(stat, metric) {
     return PlazaParser.metricValue(stat, metric);
   }
@@ -738,6 +847,10 @@ const App = (() => {
       clearSelection();
       return;
     }
+    if (state.litPlaza && (!state.stats[id] || state.stats[id].list.every(entry => entry.plaza !== state.litPlaza))) {
+      state.litPlaza = null;
+      SVGMap.setPlazaHighlight(null);
+    }
     if (SVGMap.getZoom && SVGMap.getZoom() > 1.4) SVGMap.zoomToShape(id);
     state.selected = id;
     renderMapSelection();
@@ -756,6 +869,8 @@ const App = (() => {
   }
 
   function clearSelection() {
+    state.litPlaza = null;
+    SVGMap.setPlazaHighlight(null);
     if (!state.selected) { closeDrawer(); return; }
     state.selected = null;
     renderMapSelection();
@@ -916,6 +1031,18 @@ const App = (() => {
         <span class="legend-count">${item.count}</span>
       </div>
     `).join("");
+
+    renderPlazaNote();
+  }
+
+  /** "one dot = one plaza" note under the legend (hidden when there are no dots). */
+  function renderPlazaNote() {
+    const note = document.getElementById("legendPlazaNote");
+    if (!note) return;
+    const count = state.entries.filter(entry => entry.district).length;
+    const show = state.showPlazas && count > 0;
+    note.hidden = !show;
+    note.textContent = show ? `প্রতিটি বিন্দু = একটি প্লাজা • মোট ${nf.format(count)}` : "";
   }
 
   function populateDistrictFilter() {
@@ -1097,7 +1224,7 @@ const App = (() => {
           <span>প্লাজা</span>
           ${metricColumns.map(key => `<span>${escapeHtml(columnShortLabel(key))}</span>`).join("")}
         </div>` + sorted.map(entry => `
-        <div class="drawer-row">
+        <div class="drawer-row" data-plaza="${escapeHtml(entry.plaza)}">
           <span class="drawer-row-main">
             <span class="drawer-row-name">${escapeHtml(entry.plaza.replace(/^Walton Plaza-/, ""))}</span>
             <span class="drawer-row-meta">${escapeHtml(entry.area || entry.division || "")}</span>
@@ -1110,6 +1237,7 @@ const App = (() => {
     }
     const totalsHost = document.getElementById("drawerTotals");
     if (totalsHost) totalsHost.innerHTML = totals;
+    markLitPlaza();
   }
 
   function setStatus(text, tone) {

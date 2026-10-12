@@ -71,11 +71,32 @@ alongside so growth can be judged against the district's overdue book.
 - **পুরো স্ক্রিন** button (or `F`) expands the map to the whole viewport; `Esc` leaves it.
 - The drawer has **এই জেলায় জুম করুন** to frame the selected district (and the map auto-frames it when
   you open a district while already zoomed in).
-- **Shapes and names share one transform**, so a district and its label can never drift apart
-  (they used to be in separate layers, which desynced them at other zoom levels).
+- **Shapes, names and plaza dots share one transform**, so a district, its label and its dots can
+  never drift apart (the shapes and labels used to be in separate layers, which desynced them at
+  other zoom levels).
 - Names scale with the map, and any name that would rasterise below ~6.5px is hidden instead of
   drawn as mush — zooming in, expanding to full screen or a larger window brings them back.
   When a panel is too small for any name, a hint suggests `F` (full screen).
+
+**Plaza markers**
+- Every plaza in the report is drawn as a dot inside its district outline, so the map shows
+  *where the plazas are*, not only how the district is doing. The dots are neutral (theme
+  foreground) and never fight the district fill: one dot = one plaza, worked out from the
+  report's own subset, so the demo data and the report never disagree.
+- The report carries no latitude/longitude, so a dot is a position *inside its district*, not a
+  street address. Each district's dots are laid out with farthest-point sampling over a grid
+  clipped to that district's polygon: they spread over the outline, never overlap, never leave
+  the border and are deterministic — the same plaza list always paints the same picture.
+- Dots target ~3px on screen and shrink in map units as you zoom, so they stay points at any
+  zoom level instead of turning into blobs; their outline is `non-scaling-stroke`.
+- Hover a dot for that plaza's Qty %, Amt., Advance/Total and Overdue change with its area and
+  division; click one to open its district with that plaza's row highlighted in the drawer
+  (hovering a drawer row lights its dot back up). The hover target is a fixed ring around each
+  dot and the layer resolves the *nearest* dot, so in a dense district (Dhaka holds 79 plazas)
+  the tooltip names the plaza you are pointing at instead of whichever dot is painted last.
+- The **প্লাজা চিহ্ন** switch in the map toolbar hides/shows the layer (remembered like the
+  district-name switch), the legend prints *প্রতিটি বিন্দু = একটি প্লাজা • মোট 701* whenever dots
+  are on, and PNG/SVG exports include the dots only while the layer is visible.
 
 **Visualisation**
 - Aspect-correct projection (longitude × cos(latitude)), so Bangladesh is not stretched.
@@ -138,7 +159,11 @@ npm test        # parser unit tests + jsdom end-to-end UI test
 - `tests/fonts.test.js` — self-hosted font wiring and Bengali glyph coverage of every UI string.
 - `tests/e2e.test.js` — serves the app, loads it in jsdom, pushes a generated `.xlsx`
   through the real upload pipeline and asserts the UI (map, KPIs, legend, list, drawer,
-  tooltips, filters, exports, persistence).
+  tooltips, filters, exports, persistence). The plaza markers are checked against the
+  geometry itself: every dot has to land inside its own district's SVG path (even-odd
+  rule on the rendered path), no two dots of a district may overlap, the dot layer must
+  live under the shared view transform, hover/click must name and select the plaza, and
+  the export must carry exactly one circle per plaza — and none when the layer is off.
 
 ## Customise the district data
 
