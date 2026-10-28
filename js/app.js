@@ -70,6 +70,21 @@ const App = (() => {
 
   const NO_DATA_COLOR = "#64748b";
 
+  /**
+   * Heatmap scale for plaza-level Running Month Overdue:
+   * low values are light green, high values are dark red. The curve biases the
+   * middle of the range towards orange/red so the map reads hot, not washed out.
+   */
+  const HEATMAP_STOPS = [
+    { at: 0, color: "#bbf7d0" },
+    { at: 0.16, color: "#fde047" },
+    { at: 0.34, color: "#fb923c" },
+    { at: 0.55, color: "#ef4444" },
+    { at: 0.78, color: "#b91c1c" },
+    { at: 1, color: "#7f1d1d" }
+  ];
+  const HEATMAP_GAMMA = 0.5;
+
   const nf = new Intl.NumberFormat("en-IN");
 
   const state = {
@@ -84,6 +99,7 @@ const App = (() => {
     selected: null,
     showLabels: true,
     showPlazas: true,
+    heatmap: false,
     litPlaza: null,
     fileName: "",
     savedAt: null,
@@ -100,8 +116,11 @@ const App = (() => {
   async function init() {
     const prefs = loadPrefs();
     applyTheme(prefs.theme || "dark");
+    state.metric = METRICS[prefs.metric] ? prefs.metric : "collectedQty";
     state.showPlazas = prefs.showPlazas === undefined ? true : !!prefs.showPlazas;
+    state.heatmap = !!prefs.heatmap;
     bindStaticEvents();
+    renderTabs();
     initMap();
 
     try {
@@ -156,6 +175,7 @@ const App = (() => {
       getPlazaStyle: plazaStyle,
       getPlazaTooltip: plazaTooltip,
       onPlazaSelect: selectPlaza,
+      getHeatColor: gradientColor,
       onZoom: (scale, zoomed, namesHidden) => {
         const level = document.getElementById("zoomLevel");
         if (level) level.textContent = Math.round(scale * 100) + "%";
@@ -172,6 +192,18 @@ const App = (() => {
           if (off) chip.textContent = `জুম ${Math.round(scale * 100)}% — পুরো ম্যাপ দেখুন`;
         }
       }
+    });
+    SVGMap.setHeatmapVisible(state.heatmap);
+  }
+
+  function renderTabs() {
+    document.querySelectorAll(".metric-tab").forEach(tab => {
+      const isHeat = tab.dataset.metric === "heatmap";
+      const active = isHeat
+        ? state.heatmap
+        : (!state.heatmap && tab.dataset.metric === state.metric);
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", String(active));
     });
   }
 
@@ -578,15 +610,29 @@ const App = (() => {
   /* --------------------------------------------------------------- metrics */
 
   function metricConfig() {
+    if (state.heatmap) {
+      return {
+        label: "Running Month Overdue",
+        short: "Running Overdue",
+        kind: "amount",
+        hint: "প্লাজার Running Month Overdue অনুযায়ী ওয়েদার হিটম্যাপ — কম = হালকা সবুজ, বেশি = গাঢ় লাল"
+      };
+    }
     return METRICS[state.metric] || METRICS.collectedQty;
   }
 
   function metricValue(shape) {
+    if (state.heatmap) return statRunningOverdue(state.stats[shape]);
     return PlazaParser.metricValue(state.stats[shape], state.metric);
   }
 
   function metricAvailable() {
     if (!state.ready) return true;
+    if (state.heatmap) {
+      return state.entries.some(entry => entry.data &&
+        entry.data.runningOverdue !== null && entry.data.runningOverdue !== undefined &&
+        !isNaN(entry.data.runningOverdue));
+    }
     return state.entries.some(entry => {
       const key = state.metric === "overdueChange" ? "overdueChange"
         : state.metric === "collectableAmt" ? "amtPct" : "qtyPct";
@@ -616,6 +662,7 @@ const App = (() => {
 
   function colorFor(value) {
     if (value === null || value === undefined || isNaN(value)) return NO_DATA_COLOR;
+    if (state.heatmap) return heatColor(value, districtHeatDomain());
     const band = bands().find(b => value >= b.min && value < b.max);
     return band ? band.color : NO_DATA_COLOR;
   }
@@ -627,19 +674,151 @@ const App = (() => {
   }
 
   function setMetric(metric) {
-    if (!METRICS[metric] || metric === state.metric) return;
+    if (metric === "heatmap") {
+      if (!state.heatmap) setHeatmap(true);
+      return;
+    }
+    if (!METRICS[metric]) return;
+    if (!state.heatmap && metric === state.metric) return;
+
+    const wasHeatmap = state.heatmap;
     state.metric = metric;
     savePrefs({ metric });
-    document.querySelectorAll(".metric-tab").forEach(tab => {
-      tab.classList.toggle("active", tab.dataset.metric === metric);
-      tab.setAttribute("aria-selected", String(tab.dataset.metric === metric));
-    });
     bandCache = { key: null, bands: [] };
+
+    if (wasHeatmap) {
+      setHeatmap(false, { silent: true });
+      return;
+    }
+    renderTabs();
     renderKpis();
     renderLegend();
     renderMapSelection();
     renderList();
     if (state.selected) renderDrawer();
+  }
+
+  /* --------------------------------------------------------------- heatmap */
+
+  let heatDomainCache = { entries: null, domain: null };
+  let districtDomainCache = { entries: null, domain: null };
+
+  /** Running Month Overdue total for a district, or null when the column is empty. */
+  function statRunningOverdue(stat) {
+    if (!stat || !stat.list) return null;
+    const seen = stat.list.some(entry => entry.data &&
+      entry.data.runningOverdue !== null && entry.data.runningOverdue !== undefined &&
+      !isNaN(entry.data.runningOverdue));
+    return seen ? stat.sum.runningOverdue : null;
+  }
+
+  /** Min/max Running Month Overdue across plazas that have a district (and a dot). */
+  function plazaHeatDomain() {
+    if (heatDomainCache.entries === state.entries) return heatDomainCache.domain;
+    let min = Infinity;
+    let max = -Infinity;
+    let seen = false;
+    state.entries.forEach(entry => {
+      if (!entry.district) return;
+      const value = entry.data ? entry.data.runningOverdue : null;
+      if (value === null || value === undefined || isNaN(value)) return;
+      if (value < min) min = value;
+      if (value > max) max = value;
+      seen = true;
+    });
+    const domain = seen ? { min, max } : null;
+    heatDomainCache = { entries: state.entries, domain };
+    return domain;
+  }
+
+  /** Min/max of the district Running Month Overdue totals. */
+  function districtHeatDomain() {
+    if (districtDomainCache.entries === state.entries) return districtDomainCache.domain;
+    let min = Infinity;
+    let max = -Infinity;
+    let seen = false;
+    Object.keys(state.stats).forEach(shape => {
+      const value = statRunningOverdue(state.stats[shape]);
+      if (value === null || value === undefined || isNaN(value)) return;
+      if (value < min) min = value;
+      if (value > max) max = value;
+      seen = true;
+    });
+    const domain = seen ? { min, max } : null;
+    districtDomainCache = { entries: state.entries, domain };
+    return domain;
+  }
+
+  function heatT(value, domain) {
+    if (!domain || value === null || value === undefined || isNaN(value)) return null;
+    const span = domain.max - domain.min;
+    const t = span > 0 ? Math.max(0, Math.min(1, (value - domain.min) / span)) : 0.5;
+    return Math.pow(t, HEATMAP_GAMMA);
+  }
+
+  /** Light green (small) -> yellow -> orange -> dark red (large). */
+  function heatColor(value, domain) {
+    const t = heatT(value, domain);
+    return t === null ? NO_DATA_COLOR : gradientColor(t);
+  }
+
+  function gradientColor(t) {
+    const stops = HEATMAP_STOPS;
+    if (t <= stops[0].at) return stops[0].color;
+    for (let i = 1; i < stops.length; i++) {
+      if (t <= stops[i].at) {
+        const from = stops[i - 1];
+        const to = stops[i];
+        const local = (t - from.at) / (to.at - from.at || 1);
+        return mixHex(from.color, to.color, local);
+      }
+    }
+    return stops[stops.length - 1].color;
+  }
+
+  function mixHex(from, to, t) {
+    const a = hexToRgb(from);
+    const b = hexToRgb(to);
+    const channel = (x, y) => Math.round(x + (y - x) * t);
+    return "#" + [
+      channel(a.r, b.r),
+      channel(a.g, b.g),
+      channel(a.b, b.b)
+    ].map(value => value.toString(16).padStart(2, "0")).join("");
+  }
+
+  function hexToRgb(hex) {
+    const value = parseInt(hex.slice(1), 16);
+    return { r: (value >> 16) & 255, g: (value >> 8) & 255, b: value & 255 };
+  }
+
+  function heatmapCount() {
+    return state.entries.filter(entry => entry.district && entry.data &&
+      entry.data.runningOverdue !== null && entry.data.runningOverdue !== undefined &&
+      !isNaN(entry.data.runningOverdue)).length;
+  }
+
+  /** Switch the map into (or out of) the weather-style Running Month Overdue heatmap. */
+  function setHeatmap(on, options) {
+    const next = !!on;
+    const changed = state.heatmap !== next;
+    state.heatmap = next;
+    if (changed) savePrefs({ heatmap: next });
+
+    SVGMap.setHeatmapVisible(next);
+    renderTabs();
+    renderKpis();
+    renderLegend();
+    renderMapSelection();
+    renderList();
+    renderMetricHint();
+    if (state.selected) renderDrawer();
+
+    if (changed && !(options && options.silent)) {
+      showToast(next
+        ? "Running Month Overdue ওয়েদার হিটম্যাপ চালু হয়েছে"
+        : "হিটম্যাপ বন্ধ করা হয়েছে");
+    }
   }
 
   /* ------------------------------------------------------------ formatting */
@@ -652,7 +831,7 @@ const App = (() => {
   function formatAmount(value, alwaysSign) {
     if (value === null || value === undefined || isNaN(value)) return "—";
     const rounded = Math.round(value);
-    const sign = rounded > 0 && (alwaysSign || state.metric === "overdueChange");
+    const sign = rounded > 0 && (alwaysSign || (!state.heatmap && state.metric === "overdueChange"));
     return (sign ? "+" : "") + nf.format(rounded);
   }
 
@@ -706,6 +885,17 @@ const App = (() => {
   /* ------------------------------------------------------------ map hooks */
 
   function styleForFeature(feature) {
+    if (state.heatmap) {
+      // transparent fills let the weather field show through; only outlines sit above it
+      const light = document.documentElement.dataset.theme === "light";
+      return {
+        fill: "none",
+        fillOpacity: 0,
+        stroke: light ? "#475569" : "#cbd5e1",
+        strokeOpacity: 0.62,
+        strokeWidth: 1
+      };
+    }
     const value = metricValue(feature.properties.shapeName);
     return {
       fill: colorFor(value),
@@ -757,7 +947,7 @@ const App = (() => {
    * light up on hover/selection, so the fill still says "how is this district doing"
    * while the dots say "where are the plazas".
    */
-  function plazaStyle() {
+  function plazaStyle(entry) {
     const colors = themeColors();
     // the design tokens are the source of truth; when they cannot be read (no
     // stylesheet, or a bare document) fall back to the theme attribute
@@ -778,6 +968,7 @@ const App = (() => {
       `<span class="tt-value">${formatPercent(data.qtyPct)}</span><span class="tt-hint">Collectable Vs. Collected Acc Qty (%)</span>`,
       `<span class="tt-columns">Collectable Amt.: ${columnValue("collectableAmt", data.collectableAmt)} • Collected Amt.: ${columnValue("collectedAmt", data.collectedAmt)}</span>`,
       `<span class="tt-columns">Collectable Vs. Collected Amt.: ${formatPercent(data.amtPct)} • Overdue Incr./(Decr.): ${formatAmount(data.overdueChange, true)}</span>`,
+      `<span class="tt-columns">Previous Month Overdue: ${columnValue("prevOverdue", data.prevOverdue)} • Running Month Overdue: ${columnValue("runningOverdue", data.runningOverdue)}</span>`,
       `<span class="tt-meta">${escapeHtml(where)}</span>`
     ];
     return `<strong>${escapeHtml(entry.plaza)}</strong>${rows.join("")}`;
@@ -785,6 +976,7 @@ const App = (() => {
 
   /** Feed the current dataset to the marker layer (called on every data change). */
   function syncPlazaMarkers() {
+    const domain = plazaHeatDomain();
     const list = state.entries
       .filter(entry => entry.district)
       .map(entry => ({
@@ -794,7 +986,8 @@ const App = (() => {
         plaza: entry.plaza,
         area: entry.area || "",
         division: entry.division || "",
-        data: entry.data
+        data: entry.data,
+        heat: heatT(entry.data ? entry.data.runningOverdue : null, domain)
       }));
     SVGMap.setPlazas(list);
     SVGMap.setPlazasVisible(state.showPlazas);
@@ -832,7 +1025,7 @@ const App = (() => {
   /** Rows for the active metric's report columns, e.g. Collectable / Collected / %. */
   function columnLines(stat) {
     if (!stat) return [];
-    const columns = PlazaParser.metricColumns(stat, state.metric);
+    const columns = PlazaParser.metricColumns(stat, state.heatmap ? "overdueChange" : state.metric);
     if (!columns) return [];
     const lines = [];
     const money = ["collectableAmt", "collectedAmt", "prevOverdue", "runningOverdue", "overdueChange"];
@@ -899,10 +1092,15 @@ const App = (() => {
     renderLegend();
     renderMapSelection();
     renderList();
+    renderMetricHint();
+  }
+
+  function renderMetricHint() {
     const hint = document.getElementById("metricHint");
-    if (hint) {
-      hint.textContent = metricConfig().hint + " • রঙ: নির্দিষ্ট থ্রেশহোল্ড (৬০/৭০/৮০%)";
-    }
+    if (!hint) return;
+    hint.textContent = metricConfig().hint + (state.heatmap
+      ? " • হিটম্যাপ: প্লাজার Running Month Overdue (হালকা সবুজ → গাঢ় লাল)"
+      : " • রঙ: নির্দিষ্ট থ্রেশহোল্ড (৬০/৭০/৮০%)");
   }
 
   function renderMapSelection() {
@@ -917,7 +1115,9 @@ const App = (() => {
 
   function renderMapNotice() {
     if (state.ready && !metricAvailable()) {
-      const missing = state.metric === "overdueChange" ? "Overdue Increase/(Decrease)" : metricConfig().label;
+      const missing = state.heatmap
+        ? "Running Month Overdue"
+        : (state.metric === "overdueChange" ? "Overdue Increase/(Decrease)" : metricConfig().label);
       showMapNotice("এই মেট্রিকের ডেটা নেই", `আপলোড করা রিপোর্টে “${missing}” কলামটি পাওয়া যায়নি।`);
     } else if (state.ready) {
       hideMapNotice();
@@ -936,6 +1136,7 @@ const App = (() => {
 
   function renderKpis() {
     const container = document.getElementById("kpis");
+    if (state.heatmap) { renderHeatmapKpis(container); return; }
     const covered = Object.keys(state.stats).length;
     const totalDistricts = state.geo ? state.geo.features.length : 64;
     const cards = [];
@@ -987,6 +1188,56 @@ const App = (() => {
     `).join("");
   }
 
+  function renderHeatmapKpis(container) {
+    const domain = plazaHeatDomain();
+    const total = heatmapCount();
+    let sum = 0;
+    state.entries.forEach(entry => {
+      const value = entry.data ? entry.data.runningOverdue : null;
+      if (value !== null && value !== undefined && !isNaN(value)) sum += value;
+    });
+    const ranked = rankedDistricts();
+    const cards = [
+      {
+        label: "হিটম্যাপ প্লাজা",
+        value: state.ready ? nf.format(total) : "—",
+        sub: "Running Month Overdue ডেটা আছে",
+        tone: ""
+      },
+      {
+        label: "মোট Running Month Overdue",
+        value: state.ready ? formatCompact(sum) : "—",
+        sub: "সব প্লাজার যোগফল",
+        tone: sum > 0 ? "bad" : "good"
+      },
+      {
+        label: "সর্বোচ্চ জেলা",
+        value: ranked.length ? bdDistrictInfo(ranked[0].shape).bn : "—",
+        sub: ranked.length ? formatCompact(ranked[0].value) : "ডেটা নেই",
+        tone: "bad"
+      },
+      {
+        label: "সর্বনিম্ন জেলা",
+        value: ranked.length ? bdDistrictInfo(ranked[ranked.length - 1].shape).bn : "—",
+        sub: ranked.length ? formatCompact(ranked[ranked.length - 1].value) : "ডেটা নেই",
+        tone: "good"
+      },
+      {
+        label: "হিটম্যাপ স্কেল",
+        value: domain ? `${formatCompact(domain.min)} – ${formatCompact(domain.max)}` : "—",
+        sub: "হালকা সবুজ (কম) → গাঢ় লাল (বেশি)",
+        tone: ""
+      }
+    ];
+    container.innerHTML = cards.map(card => `
+      <div class="kpi ${card.tone ? "kpi-" + card.tone : ""}">
+        <span class="kpi-label">${escapeHtml(card.label)}</span>
+        <span class="kpi-value">${escapeHtml(card.value)}</span>
+        <span class="kpi-sub">${escapeHtml(card.sub)}</span>
+      </div>
+    `).join("");
+  }
+
   /** Districts ordered best -> worst for the active metric. */
   function rankedDistricts() {
     const list = [];
@@ -995,13 +1246,24 @@ const App = (() => {
       if (value === null || value === undefined) return;
       list.push({ shape, value });
     });
-    list.sort((a, b) => state.metric === "overdueChange" ? a.value - b.value : b.value - a.value);
+    list.sort((a, b) => {
+      if (state.heatmap) return b.value - a.value;
+      return state.metric === "overdueChange" ? a.value - b.value : b.value - a.value;
+    });
     return list;
   }
 
   function renderLegend() {
     const legendEl = document.getElementById("legend");
     const titleEl = document.getElementById("legendMetric");
+    if (state.heatmap) {
+      if (titleEl) titleEl.textContent = "Running Month Overdue — ওয়েদার হিটম্যাপ";
+      if (legendEl) { legendEl.innerHTML = ""; legendEl.hidden = true; }
+      renderPlazaNote();
+      renderHeatmapLegend();
+      return;
+    }
+    if (legendEl) legendEl.hidden = false;
     if (titleEl) {
       titleEl.textContent = metricConfig().label + " (নির্দিষ্ট থ্রেশহোল্ড)";
     }
@@ -1033,6 +1295,29 @@ const App = (() => {
     `).join("");
 
     renderPlazaNote();
+    renderHeatmapLegend();
+  }
+
+  /** Heatmap key (min/max Running Month Overdue), shown while the heatmap is on. */
+  function renderHeatmapLegend() {
+    const host = document.getElementById("heatmapLegend");
+    if (!host) return;
+    const wrap = host.closest ? host.closest(".map-legend") : null;
+    if (wrap) wrap.classList.toggle("heatmap-on", state.heatmap);
+    host.hidden = !state.heatmap;
+    if (!state.heatmap) return;
+
+    const domain = plazaHeatDomain();
+    const minEl = document.getElementById("heatmapMin");
+    const maxEl = document.getElementById("heatmapMax");
+    const noteEl = document.getElementById("heatmapNote");
+    if (minEl) minEl.textContent = domain ? nf.format(Math.round(domain.min)) : "—";
+    if (maxEl) maxEl.textContent = domain ? nf.format(Math.round(domain.max)) : "—";
+    if (noteEl) {
+      noteEl.textContent = domain
+        ? `${nf.format(heatmapCount())} প্লাজার Running Month Overdue • কম = হালকা সবুজ, বেশি = গাঢ় লাল`
+        : "এই রিপোর্টে Running Month Overdue ডেটা পাওয়া যায়নি";
+    }
   }
 
   /** "one dot = one plaza" note under the legend (hidden when there are no dots). */
@@ -1040,7 +1325,8 @@ const App = (() => {
     const note = document.getElementById("legendPlazaNote");
     if (!note) return;
     const count = state.entries.filter(entry => entry.district).length;
-    const show = state.showPlazas && count > 0;
+    // the heatmap carries its own key/note, so this one would only repeat it
+    const show = state.showPlazas && count > 0 && !state.heatmap;
     note.hidden = !show;
     note.textContent = show ? `প্রতিটি বিন্দু = একটি প্লাজা • মোট ${nf.format(count)}` : "";
   }
@@ -1157,7 +1443,8 @@ const App = (() => {
       ? `${info.en} • ${nf.format(stat.plazas)} প্লাজা`
       : `${info.en} • কোনো প্লাজা ডেটা নেই`;
 
-    const columns = stat ? PlazaParser.metricColumns(stat, state.metric) : null;
+    const metricKey = state.heatmap ? "overdueChange" : state.metric;
+    const columns = stat ? PlazaParser.metricColumns(stat, metricKey) : null;
     const stats = [];
     stats.push({ label: metricConfig().label, value: formatValue(metricValue(shape)), primary: true });
     if (columns) {
@@ -1209,15 +1496,17 @@ const App = (() => {
       listTitle.textContent = "প্লাজা তালিকা";
       listEl.innerHTML = '<div class="list-empty">এই জেলার জন্য কোনো প্লাজা ডেটা পাওয়া যায়নি</div>';
     } else {
-      const metricColumns = METRICS[state.metric].columns;
+      const metricColumns = METRICS[state.heatmap ? "overdueChange" : state.metric].columns;
+      const strongIndex = state.heatmap ? 1 : 2;
+      const sortKey = state.heatmap ? "runningOverdue" : metricColumns[2];
       const sorted = stat.list.slice().sort((a, b) => {
-        const av = a.data[metricColumns[2]];
-        const bv = b.data[metricColumns[2]];
+        const av = a.data[sortKey];
+        const bv = b.data[sortKey];
         if (av === null) return 1;
         if (bv === null) return -1;
+        if (state.heatmap) return bv - av;
         return state.metric === "overdueChange" ? av - bv : bv - av;
       });
-      const isPercent = metricConfig().kind === "percent";
       listTitle.textContent = `প্লাজা তালিকা (${nf.format(sorted.length)})`;
       listEl.innerHTML = `
         <div class="drawer-table-head">
@@ -1230,8 +1519,8 @@ const App = (() => {
             <span class="drawer-row-meta">${escapeHtml(entry.area || entry.division || "")}</span>
           </span>
           ${metricColumns.map(key => `
-            <span class="drawer-cell${entry.data[key] === null ? " dim" : ""}${key === metricColumns[2] ? " strong" : ""}">
-              ${key === metricColumns[2] ? formatValue(entry.data[key]) : columnValue(key, entry.data[key])}
+            <span class="drawer-cell${entry.data[key] === null ? " dim" : ""}${key === metricColumns[strongIndex] ? " strong" : ""}">
+              ${key === metricColumns[strongIndex] ? formatValue(entry.data[key]) : columnValue(key, entry.data[key])}
             </span>`).join("")}
         </div>`).join("");
     }
@@ -1336,8 +1625,20 @@ const App = (() => {
 
   async function exportImage() {
     const colors = themeColors();
-    const legendItems = bands().map(band => ({ color: band.color, label: band.label }));
-    legendItems.push({ color: NO_DATA_COLOR, label: "ডেটা নেই" });
+    let legendItems;
+    if (state.heatmap) {
+      const domain = plazaHeatDomain();
+      legendItems = HEATMAP_STOPS.map((stop, index) => ({
+        color: stop.color,
+        label: index === 0
+          ? `Running Month Overdue — কম${domain ? " (" + nf.format(Math.round(domain.min)) + ")" : ""}`
+          : index === HEATMAP_STOPS.length - 1 ? "বেশি" : "মধ্যম"
+      }));
+      legendItems.push({ color: NO_DATA_COLOR, label: "ডেটা নেই" });
+    } else {
+      legendItems = bands().map(band => ({ color: band.color, label: band.label }));
+      legendItems.push({ color: NO_DATA_COLOR, label: "ডেটা নেই" });
+    }
 
     setStatus("ছবি তৈরি হচ্ছে...", "loading");
     // fonts must be resolved before rasterising, otherwise the map can render with fallbacks
@@ -1347,7 +1648,9 @@ const App = (() => {
     const fontCss = await embeddableFontCss();
     const { markup, width, height } = SVGMap.buildExportSVG({
       title: "ওয়ালটন প্লাজা কালেকশন ম্যাপ",
-      subtitle: `${metricConfig().label} — জেলাভিত্তিক`,
+      subtitle: state.heatmap
+        ? "Running Month Overdue — প্লাজা হিটম্যাপ (হালকা সবুজ → গাঢ় লাল)"
+        : `${metricConfig().label} — জেলাভিত্তিক`,
       legend: legendItems,
       background: colors.background,
       text: colors.text,
@@ -1463,6 +1766,7 @@ const App = (() => {
     internals: {
       state,
       setMetric,
+      setHeatmap,
       ingestBuffer,
       loadEntries,
       renderAll,

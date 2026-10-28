@@ -78,7 +78,7 @@ check("responsive layout blocks are present", () => {
 
 check("map chrome rules exist", () => {
   [".zoom-chip", ".zoom-btn", ".zoom-level", ".map-legend", ".labels-hint",
-    ".district-label.too-small", ".map-empty"].forEach(selector => {
+    ".district-label.too-small", ".map-empty", ".heatmap-legend", ".heatmap-bar"].forEach(selector => {
     if (css.indexOf(selector) === -1) throw new Error("missing rule: " + selector);
   });
 });

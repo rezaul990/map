@@ -507,6 +507,68 @@ body.busy .status-bar .upload-status::after {
   color: var(--text-dim);
 }
 
+/* weather heatmap: the field lives on the map, the key replaces the threshold bands */
+.map-legend.heatmap-on { max-height: 132px; }
+.map-legend.heatmap-on .legend-title { display: none; }
+
+.metric-tab-heatmap { color: #fca5a5; }
+.metric-tab-heatmap:hover { color: #fecaca; }
+.metric-tab-heatmap.active {
+  background: linear-gradient(140deg, #f59e0b, #b91c1c);
+  box-shadow: 0 4px 14px rgba(185, 28, 28, 0.3);
+}
+
+.heatmap-legend {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+
+.heatmap-title {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin-bottom: 5px;
+}
+
+.heatmap-title strong {
+  color: var(--text-muted);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.heatmap-scale {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.heatmap-tick {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.heatmap-bar {
+  flex: 1;
+  min-width: 90px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: linear-gradient(90deg, #bbf7d0 0%, #fde047 16%, #fb923c 34%, #ef4444 55%, #b91c1c 78%, #7f1d1d 100%);
+}
+
+.heatmap-note {
+  display: block;
+  margin-top: 5px;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
 /* ------------------------------------------------------------ district list */
 
 .list-container { flex: 1; overflow-y: auto; padding: 8px; min-height: 120px; }

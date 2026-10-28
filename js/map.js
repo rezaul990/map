@@ -16,6 +16,7 @@ const SVGMap = (() => {
   let svg = null;
   let mapGroup = null;
   let pathGroup = null;
+  let heatGroup = null;
   let plazaGroup = null;
   let labelGroup = null;
   let tooltip = null;
@@ -34,6 +35,8 @@ const SVGMap = (() => {
   let labelsVisible = true;
   let accent = "#38bdf8";
   let plainRender = false;
+  let heatVisible = false;
+  let heatRenderKey = "";
 
   /* zoom / pan: 1 = the whole map fits the panel, below that it shrinks with a margin */
   const MIN_SCALE = 0.4;
@@ -127,7 +130,8 @@ const SVGMap = (() => {
       onZoom: options.onZoom || (() => {}),
       getPlazaStyle: options.getPlazaStyle || (() => ({})),
       getPlazaTooltip: options.getPlazaTooltip || (() => ""),
-      onPlazaSelect: options.onPlazaSelect || (() => {})
+      onPlazaSelect: options.onPlazaSelect || (() => {}),
+      getHeatColor: options.getHeatColor || (() => "#991b1b")
     };
     container.innerHTML = "";
     container.classList.add("has-svg");
@@ -146,10 +150,15 @@ const SVGMap = (() => {
     mapGroup.setAttribute("class", "map-view");
     pathGroup = document.createElementNS(NS, "g");
     pathGroup.setAttribute("class", "map-paths");
+    heatGroup = document.createElementNS(NS, "g");
+    heatGroup.setAttribute("class", "map-heat-layer");
+    heatGroup.setAttribute("aria-hidden", "true");
+    heatGroup.setAttribute("pointer-events", "none");
     plazaGroup = document.createElementNS(NS, "g");
     plazaGroup.setAttribute("class", "map-plazas");
     labelGroup = document.createElementNS(NS, "g");
     labelGroup.setAttribute("class", "map-labels");
+    mapGroup.appendChild(heatGroup);
     mapGroup.appendChild(pathGroup);
     mapGroup.appendChild(plazaGroup);
     mapGroup.appendChild(labelGroup);
@@ -456,6 +465,8 @@ const SVGMap = (() => {
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
     pathGroup.innerHTML = "";
+    if (heatGroup) heatGroup.innerHTML = "";
+    heatRenderKey = "";
     labelGroup.innerHTML = "";
 
     features.forEach(feature => {
@@ -1004,6 +1015,7 @@ const SVGMap = (() => {
     });
 
     attachPlazaPicker();
+    renderHeat();
   }
 
   /**
@@ -1092,21 +1104,146 @@ const SVGMap = (() => {
       const dimmed = activeSelected ? item.shape !== activeSelected : false;
       const radius = Math.min(item.baseRadius, screenRadius) * (hot ? 1.5 : 1);
       const style = hooks.getPlazaStyle(item.entry) || {};
-      const key = [radius.toFixed(2), hot ? 1 : 0, dimmed ? 1 : 0, style.fill, style.stroke, style.fillOpacity, style.strokeOpacity].join("|");
+      // in heatmap mode the weather field carries the colour; dots stay as hover targets
+      const hidden = heatVisible && !hot;
+      const key = [radius.toFixed(2), hot ? 1 : 0, dimmed ? 1 : 0, hidden ? 1 : 0,
+        style.fill, style.stroke, style.fillOpacity, style.strokeOpacity].join("|");
       if (key === item.styled) return;
       item.styled = key;
 
       item.dot.setAttribute("r", radius.toFixed(2));
       item.hit.setAttribute("r", (radius * PLAZA.hitScale).toFixed(2));
       item.dot.setAttribute("fill", hot ? accent : (style.fill || "#e2e8f0"));
-      item.dot.setAttribute("fill-opacity", dimmed ? 0.25 : (style.fillOpacity === undefined ? 1 : style.fillOpacity));
+      item.dot.setAttribute("fill-opacity", hidden ? 0 : dimmed ? 0.25 : (style.fillOpacity === undefined ? 1 : style.fillOpacity));
       item.dot.setAttribute("stroke", hot ? "#ffffff" : (style.stroke || "#0f172a"));
-      item.dot.setAttribute("stroke-opacity", hot ? 1 : (style.strokeOpacity === undefined ? 0.85 : style.strokeOpacity));
+      item.dot.setAttribute("stroke-opacity", hidden ? 0 : hot ? 1 : (style.strokeOpacity === undefined ? 0.85 : style.strokeOpacity));
       item.dot.setAttribute("stroke-width", hot ? 1.6 : (style.strokeWidth === undefined ? 1 : style.strokeWidth));
       item.dot.classList.toggle("lit", hot);
       // the dot under the pointer sits on top of its neighbours
       if (hot && plazaGroup.lastElementChild !== item.node) plazaGroup.appendChild(item.node);
     });
+  }
+
+  /* ---------------------------------------------------------------- heatmap */
+
+  /**
+   * Weather-style Running Month Overdue field: every plaza contributes a soft blob
+   * tinted by its normalised value, so the map reads like a temperature overlay.
+   * Canvas is used when available (and travels into the export as an <image>); a
+   * plain SVG fallback keeps jsdom and old engines working.
+   */
+  function setHeatmapVisible(visible) {
+    heatVisible = !!visible;
+    if (svg) svg.classList.toggle("heatmap-on", heatVisible);
+    renderHeat();
+    refresh();
+  }
+
+  function heatPoints() {
+    return plazaItems.filter(item => {
+      const value = item.entry ? item.entry.heat : null;
+      return value !== null && value !== undefined && !isNaN(value);
+    });
+  }
+
+  function heatColor(value) {
+    const color = hooks.getHeatColor(value);
+    return typeof color === "string" && color ? color : "#991b1b";
+  }
+
+  function heatRadius() {
+    // small enough to keep neighbouring plazas distinguishable, large enough to blend
+    return Math.max(14, Math.min(width, height) * 0.042);
+  }
+
+  function renderHeat() {
+    if (!heatGroup) return;
+    const points = heatVisible ? heatPoints() : [];
+    const key = points.map(item =>
+      `${item.x.toFixed(1)},${item.y.toFixed(1)},${Number(item.entry.heat).toFixed(3)}`
+    ).join(";");
+    if (key === heatRenderKey) return;
+    heatRenderKey = key;
+    heatGroup.innerHTML = "";
+    if (!points.length) return;
+    const ordered = points.slice().sort((a, b) => a.entry.heat - b.entry.heat);
+    const image = buildHeatImage(ordered);
+    if (image) heatGroup.appendChild(image);
+    else buildHeatFallback(ordered);
+  }
+
+  function buildHeatImage(points) {
+    let canvas = null;
+    let ctx = null;
+    try {
+      canvas = document.createElement("canvas");
+      canvas.width = Math.max(2, Math.round(width * 2));
+      canvas.height = Math.max(2, Math.round(height * 2));
+      ctx = canvas.getContext("2d");
+    } catch (err) {
+      return null;
+    }
+    if (!ctx) return null;
+
+    const scaleX = canvas.width / width;
+    const scaleY = canvas.height / height;
+    const radius = heatRadius() * Math.max(scaleX, scaleY);
+
+    points.forEach(item => {
+      const cx = item.x * scaleX;
+      const cy = item.y * scaleY;
+      const hex = heatColor(item.entry.heat);
+      // hotter plazas burn brighter, so the red hotspots stay specific
+      const strength = 0.3 + 0.45 * item.entry.heat;
+      const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+      gradient.addColorStop(0, hexToRgba(hex, strength));
+      gradient.addColorStop(0.5, hexToRgba(hex, strength * 0.55));
+      gradient.addColorStop(1, hexToRgba(hex, 0));
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    let href = "";
+    try { href = canvas.toDataURL("image/png"); } catch (err) { return null; }
+    if (!href || href.indexOf("data:image") !== 0) return null;
+
+    const image = document.createElementNS(NS, "image");
+    image.setAttribute("class", "map-heat-image");
+    image.setAttribute("x", "0");
+    image.setAttribute("y", "0");
+    image.setAttribute("width", String(width));
+    image.setAttribute("height", String(height));
+    image.setAttribute("preserveAspectRatio", "none");
+    image.setAttribute("opacity", "0.92");
+    image.setAttribute("pointer-events", "none");
+    image.setAttribute("href", href);
+    image.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", href);
+    return image;
+  }
+
+  function buildHeatFallback(points) {
+    const radius = heatRadius();
+    points.forEach(item => {
+      const circle = document.createElementNS(NS, "circle");
+      circle.setAttribute("class", "map-heat");
+      circle.setAttribute("cx", item.x.toFixed(2));
+      circle.setAttribute("cy", item.y.toFixed(2));
+      circle.setAttribute("r", radius.toFixed(2));
+      circle.setAttribute("fill", heatColor(item.entry.heat));
+      circle.setAttribute("fill-opacity", (0.18 + 0.22 * item.entry.heat).toFixed(2));
+      circle.setAttribute("stroke", "none");
+      circle.setAttribute("pointer-events", "none");
+      heatGroup.appendChild(circle);
+    });
+  }
+
+  function hexToRgba(hex, alpha) {
+    const value = String(hex || "").replace("#", "");
+    if (value.length !== 6) return `rgba(153, 27, 27, ${alpha})`;
+    const num = parseInt(value, 16);
+    return `rgba(${(num >> 16) & 255}, ${(num >> 8) & 255}, ${num & 255}, ${alpha})`;
   }
 
   /* ----------------------------------------------------------------- export */
@@ -1185,7 +1322,7 @@ const SVGMap = (() => {
     }
 
     // copy the live map (paths + labels + plaza dots) with resolved inline styles
-    const live = svg.querySelectorAll("path, text, circle.map-plaza");
+    const live = svg.querySelectorAll("path, text, circle.map-plaza, image.map-heat-image, circle.map-heat");
     const group = document.createElementNS(NS, "g");
     const cloned = [];
     live.forEach(node => {
@@ -1275,6 +1412,7 @@ const SVGMap = (() => {
     setLabelsVisible(visible) { labelsVisible = visible; refresh(); },
     setPlazas,
     setPlazasVisible(visible) { plazasVisible = !!visible; refresh(); },
+    setHeatmapVisible,
     setPlazaHighlight(id) { litPlazaId = id || null; refresh(); },
     getPlazaCount() { return plazaItems.length; },
     planPlazaPositions,

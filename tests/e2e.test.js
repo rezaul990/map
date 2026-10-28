@@ -430,6 +430,64 @@ function report() {
     assert.strictEqual(doc.querySelector("#map .map-plazas").style.display, "");
   });
 
+  check("heatmap tab paints a weather field for Running Month Overdue", () => {
+    const tab = doc.querySelector('.metric-tab[data-metric="heatmap"]');
+    const key = doc.getElementById("heatmapLegend");
+    const legend = doc.getElementById("legend");
+
+    tab.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+
+    assert.strictEqual(App.internals.state.heatmap, true);
+    assert.ok(tab.classList.contains("active"), "heatmap tab is active");
+    assert.strictEqual(tab.getAttribute("aria-selected"), "true");
+    assert.strictEqual(key.hidden, false, "weather key is shown");
+    assert.strictEqual(legend.hidden, true, "threshold legend is hidden");
+
+    const layer = doc.querySelector("#map .map-heat-layer");
+    assert.ok(layer, "heat layer exists");
+    assert.ok(layer.children.length > 100, "one weather blob per plaza: " + layer.children.length);
+    const blobs = layer.querySelectorAll("circle.map-heat");
+    assert.ok(blobs.length > 100, "canvas-less environments get SVG blobs");
+    assert.strictEqual(blobs[0].getAttribute("fill"), "#bbf7d0",
+      "smallest overdue is light green");
+    assert.strictEqual(blobs[blobs.length - 1].getAttribute("fill"), "#7f1d1d",
+      "largest overdue is deep red");
+
+    const firstPath = doc.querySelector("#map path.map-path");
+    assert.strictEqual(firstPath.getAttribute("fill"), "none",
+      "district fills step aside for the weather field");
+    const dot = doc.querySelector("#map .map-plaza");
+    assert.strictEqual(dot.getAttribute("fill-opacity"), "0", "plaza dots hide under the field");
+
+    const labels = Array.from(doc.querySelectorAll("#kpis .kpi-label")).map(el => el.textContent);
+    assert.ok(labels.some(label => label.includes("Running")), "heatmap KPIs: " + labels.join(" | "));
+
+    const entries = App.internals.state.entries.filter(entry =>
+      entry.district && typeof entry.data.runningOverdue === "number" &&
+      !isNaN(entry.data.runningOverdue));
+    assert.ok(entries.length > 100, "plazas with Running Month Overdue: " + entries.length);
+    const low = entries.reduce((best, entry) =>
+      entry.data.runningOverdue < best.data.runningOverdue ? entry : best);
+    const high = entries.reduce((best, entry) =>
+      entry.data.runningOverdue > best.data.runningOverdue ? entry : best);
+
+    const nf = new Intl.NumberFormat("en-IN");
+    assert.strictEqual(doc.getElementById("heatmapMin").textContent,
+      nf.format(Math.round(low.data.runningOverdue)));
+    assert.strictEqual(doc.getElementById("heatmapMax").textContent,
+      nf.format(Math.round(high.data.runningOverdue)));
+    assert.ok(doc.getElementById("heatmapNote").textContent.includes("প্লাজা"));
+
+    const normal = doc.querySelector('.metric-tab[data-metric="collectedQty"]');
+    normal.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.strictEqual(App.internals.state.heatmap, false);
+    assert.strictEqual(key.hidden, true, "key hidden when off");
+    assert.strictEqual(legend.hidden, false, "threshold legend returns");
+    assert.strictEqual(layer.children.length, 0, "heat layer is cleared");
+    assert.notStrictEqual(doc.querySelector("#map .map-plaza").getAttribute("fill-opacity"), "0",
+      "plaza dots return");
+  });
+
   /** Where a dot sits, in the coordinates the pointer handler works in (fit view: 1:1). */
   const dotPoint = group => {
     const dot = group.querySelector("circle.map-plaza");
@@ -789,7 +847,10 @@ function report() {
     const labels = doc.querySelector("#map .map-labels");
     assert.strictEqual(paths.parentNode, view, "paths inside the transformed group");
     assert.strictEqual(labels.parentNode, view, "labels inside the same transformed group");
-    assert.strictEqual(pathGroupFirstChild(view), "map-paths", "paths are painted below the labels");
+    const order = Array.from(view.children).map(node => node.getAttribute("class"));
+    assert.strictEqual(order[0], "map-heat-layer", "the weather field sits under the districts");
+    assert.ok(order.indexOf("map-paths") < order.indexOf("map-labels"),
+      "paths are painted below the labels: " + order.join(" -> "));
   });
 
   check("names too small to read are flagged, and come back when there is room", () => {
@@ -871,10 +932,6 @@ function report() {
     });
     assert.strictEqual(checked, 64);
   });
-
-  function pathGroupFirstChild(view) {
-    return Array.prototype.find.call(view.childNodes, node => node.nodeType === 1).getAttribute("class");
-  }
 
   check("names scale with the map, so zooming in magnifies them", () => {
     const label = doc.querySelector('.district-label[data-id="Dhaka"]');

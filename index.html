@@ -10,7 +10,7 @@
 <!-- Bengali/Latin fonts are self-hosted (vendor/fonts): no external font CDN, works offline -->
 <link rel="preload" as="font" type="font/woff2" href="vendor/fonts/hind-siliguri-400-bengali.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="vendor/fonts/hind-siliguri-600-bengali.woff2" crossorigin>
-<link rel="stylesheet" href="css/style.css?v=8">
+<link rel="stylesheet" href="css/style.css?v=10">
 <!--
   Critical map geometry, inline on purpose.
 
@@ -82,6 +82,10 @@
       <button class="metric-tab active" role="tab" aria-selected="true" data-metric="collectedQty">Collected Acc Qty</button>
       <button class="metric-tab" role="tab" aria-selected="false" data-metric="collectableAmt">Collectable Amt.</button>
       <button class="metric-tab" role="tab" aria-selected="false" data-metric="overdueChange">Overdue Increase/(Decrease)</button>
+      <button class="metric-tab metric-tab-heatmap" role="tab" aria-selected="false" data-metric="heatmap" title="Running Month Overdue অনুযায়ী ওয়েদার হিটম্যাপ">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 21a6 6 0 0 0 0-12c-1.7 0-3 1-3.5 2.5A4 4 0 1 0 6 19"/><path d="M12 3v3M4.2 7.2l2.1 2.1M19.8 7.2l-2.1 2.1"/></svg>
+        হিটম্যাপ — Running Overdue
+      </button>
     </nav>
     <p class="metric-hint" id="metricHint"></p>
   </div>
@@ -160,6 +164,15 @@
         <span class="legend-title">লিজেন্ড — <strong id="legendMetric"></strong></span>
         <div class="legend" id="legend"></div>
         <span class="legend-note" id="legendPlazaNote" hidden></span>
+        <div class="heatmap-legend" id="heatmapLegend" hidden>
+          <span class="heatmap-title">Running Month Overdue — <strong>ওয়েদার হিটম্যাপ</strong></span>
+          <div class="heatmap-scale">
+            <span class="heatmap-tick" id="heatmapMin">—</span>
+            <span class="heatmap-bar" role="img" aria-label="হালকা সবুজ (কম) থেকে গাঢ় লাল (বেশি)"></span>
+            <span class="heatmap-tick" id="heatmapMax">—</span>
+          </div>
+          <span class="heatmap-note" id="heatmapNote"></span>
+        </div>
       </div>
     </section>
   </main>
@@ -202,10 +215,10 @@ if (typeof XLSX === "undefined") {
   document.write('<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"><\/script>');
 }
 </script>
-<script src="js/plaza.js?v=8"></script>
-<script src="js/data.js?v=8"></script>
-<script src="js/parse.js?v=8"></script>
-<script src="js/map.js?v=8"></script>
-<script src="js/app.js?v=8"></script>
+<script src="js/plaza.js?v=10"></script>
+<script src="js/data.js?v=10"></script>
+<script src="js/parse.js?v=10"></script>
+<script src="js/map.js?v=10"></script>
+<script src="js/app.js?v=10"></script>
 </body>
 </html>
